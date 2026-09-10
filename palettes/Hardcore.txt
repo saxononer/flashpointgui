@@ -1,0 +1,132 @@
+Unicorn Yellow, #FFFFBF
+Beach Yellow, #FFF386
+Cream, #FFF7B6
+Party Yellow, #FFF048
+Light Yellow, #FFE100
+Luxor Yellow, #FFE100
+Ganges Yellow, #C8A10A
+Atacama Yellow, #FBCB8C
+Peach, #F9BA57
+Medium Yellow, #F6A800
+Mango, #E77A19
+Mustard, #B9501A
+Pangea Brown, #933B00
+Rust Red, #6D2601
+Apricot, #FAC294
+Pumpkin, #F6AD6B
+Pastel Orange, #EC753B
+Iroko Red, #5E0000
+Flamingo, #FF958E
+Colorado Red, #E74F45
+Light Red, #E5352D
+Vivid Red, #C90019
+Madrid Red, #C52332
+Soviet Red, #8D0000
+Bordeaux Red, #82131D
+Alice Pink, #F4ADC5
+Manga Pink, #FFA2CA
+Love Pink, #EE87AD
+Erika, #DE336B
+Magenta, #DD1D5A
+Akari Red, #C50041
+Merlot Red, #762A3D
+Violet Treze, #F6B8D0
+Princess Violet, #CA87B6
+Witch Violet, #C8739F
+Geisha Violet, #C15C92
+Pure Purple, #8F154B
+Tube Violet, #7C3F60
+Cherry, #582741
+Malva, #ACA6D1
+Violet, #9993C3
+Prophet Violet, #6D63A5
+Blue Violet, #574A96
+Anonymous Violet, #45347A
+Galaxy Violet, #2F2280
+Vampire Violet, #00084D
+Aurora Blue, #C8D3ED
+Hortensia Blue, #889ED1
+Gala Blue, #5D78BA
+Julione Blue, #40549F
+Babylon Blue, #3D5588
+Lewis Blue, #213A8F
+Universe Blue, #0F2354
+Costa Brava Blue, #94BFE5
+Waimea Blue, #6F9FD0
+Zeppelin Blue, #4875B3
+Andromeda Blue, #465499
+Ultramarine Blue, #37306A
+Leviathan Blue, #0D0F49
+Nostromo Blue, #020E37
+Himalayan Blue, #97E6FF
+Arctic Blue, #6BDCFF
+Carlota Light Blue, #60C5E7
+Avatar Blue, #00A2DD
+Electric Blue, #007FC4
+Dark Blue, #00659D
+Neptune Blue, #004578
+Fukushima Blue, #8ECFD3
+Patagonia Blue, #83CCDF
+Cousteau Blue, #1BB2C4
+Glacier Blue, #009CAB
+Planet Blue, #008098
+Christiania Blue, #006675
+Indigo Blue, #004750
+Vintage Blue, #97D2D0
+Iceberg Blue, #6EC3BF
+Water Lily Blue, #60B3AC
+Mururoa Blue, #008C8D
+Caribbean Blue, #007F80
+Major Blue, #1F6363
+Ocean Blue, #00454E
+Potosi Green, #C5EFDA
+Max Green, #9FE5C2
+Paris Green, #8BC8AA
+UFO Green, #5BB89E
+Surgical Green, #009473
+Dark Green, #008352
+Persephone Green, #005231
+Golden Green, #9CCD9A
+Light Green, #74B957
+Guacamole Green, #88B14F
+Valley Green, #6A9720
+Cologno N. Green, #6A8515
+Lutecia Green, #005900
+Amazonas Green, #0F2405
+Poison Green, #DEDD3A
+Mojito Green, #CED50A
+Pistachio Green, #B0C643
+Mantis Green, #78BE7A
+Mint Green, #60B565
+Natura Green, #00964F
+Reggae Green, #006942
+Pale Green, #CCE0AC
+Element Green, #C5CC8F
+Apple Green, #ACB681
+Rambo Green, #8F995B
+Khaki Green, #727E48
+Olive Green, #60683D
+Forest Green, #46502C
+Druide Brown, #EECF99
+Tepuy Brown, #DEB276
+Baobab Brown, #CC9456
+Greyhound Brown, #B0763F
+Toasted Brown, #8A5531
+Tobacco Brown, #402009
+Chocolate Brown, #4D2200
+Puchineli White, #F9F7EA
+Bone white, #F3EFD6
+Arkalis Grey, #EBE6D6
+City Grey, #CABDB0
+Regina Grey, #B7A794
+Nazgul Grey, #928782
+Ripley Grey, #7E7F82
+Light Grey, #E1E2E2
+Squatter Grey, #C4C5C6
+Matter Grey, #7B7B7B
+Pearl Grey, #7B7C7E
+Dark Grey, #616264
+Sputnik Grey, #575757
+Anthracite Grey, #464648
+Divinity White, #FFFFFF
+Gloss Black, #000000
