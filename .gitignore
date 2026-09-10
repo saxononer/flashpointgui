@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# output artifacts (regenerated on run)
+out*/
+*_out*/
+fpv3prev*
+master_*.png
+borders_*.png
+stats.html
+layers/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
