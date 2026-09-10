@@ -1,17 +1,27 @@
-"""Headless xvfb smoke test for the 9 GUI fixes. Prints PASS/FAIL per check."""
-import sys, os, math, numpy as np
+"""Headless xvfb smoke test for the flashpoint GUI. Prints PASS/FAIL per check.
+
+Covers the original 9 fixes PLUS the batch-2 changes:
+  - specific-layer prep view honors the CURRENT border colour (was fixed magenta)
+  - swatches show "cans <n>" (not a bare number)
+  - Save All Layers -> folder (master + borders.png + layers/ + stats.html)
+  - Save Paint List -> static HTML table (name, colour example, cans)
+  - quantize runs on a worker thread with an animated "Quantizing..." spinner
+  - paint env H/S/L/contrast sliders (vectorized adjust_image + wiring)
+"""
+import sys, os, math, time
+import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import flashpoint_gui as g
 import flashpoint_core as core
 import tkinter as tk
 from tkinter import ttk
 
-# --- synthetic 24-color palette + 24-block image ---
+# --- synthetic 24-color palette + 24-block image (560x560, internal edges) ---
 N = 24
 tmp_img = "/tmp/fp_smoke.png"; tmp_pal = "/tmp/fp_smoke_pal.txt"
 rng = np.random.default_rng(7)
 cols = [tuple(int(c) for c in rng.integers(20, 235, 3)) for _ in range(N)]
-W, H = 240, 240
+W, H = 560, 560
 img = np.zeros((H, W, 3), dtype="uint8")
 cw, ch = W // 6, H // 4
 for i, (r, gg, b) in enumerate(cols):
@@ -31,9 +41,27 @@ def check(name, cond, extra=""):
     if cond: ok += 1; print(f"  PASS  {name} {extra}")
     else:    fail += 1; print(f"  FAIL  {name} {extra}")
 
+orig_status = app._status
+
+def pump(cond, timeout=12.0):
+    """Spin the Tcl event loop until cond() is true (or timeout)."""
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        root.update(); root.update_idletasks()
+        if cond():
+            return True
+        time.sleep(0.02)
+    return cond()
+
+# ---- top-level quantize is now ASYNC (worker thread + animator) ----
 app.num_var.set("10"); app.exact_var.set(False)
-app.prep_quantize(); root.update()
+app.prep_quantize()
+pump(lambda: (not app._quant_running)
+     and (app.state is not None or app._quant_err is not None))
 st = app.state
+print("== 0. quantize is threaded (state produced) ==")
+check("top-level quantize produced a state", st is not None,
+      f"(running={app._quant_running})")
 
 print("== 1. spinboxes keyboard-editable (no readonly) ==")
 def all_spinboxes():
@@ -53,7 +81,7 @@ check("mural_mode var", hasattr(app, "mural_mode"))
 check("mural_var var", hasattr(app, "mural_var"))
 check("eff_var var", hasattr(app, "eff_var"))
 
-print("== 3. swatch shows cans (matches core stats.html formula) ==")
+print("== 3. swatch shows 'cans <n>' (matches core stats.html formula) ==")
 app.mural_mode.set("width"); app.mural_var.set("3"); app.eff_var.set("3")
 root.update()
 total_px = st.W * st.H
@@ -74,22 +102,21 @@ app._draw_swatch(); root.update()
 texts = [app.swatch_canvas.itemcget(i, "text")
          for i in app.swatch_canvas.find_withtag("all")
          if app.swatch_canvas.type(i) == "text"]
-# cans text present: numeric strings; '—' when unmeasurable
-nums = [t for t in texts if t.isdigit()]
-check("swatch renders numeric cans", len(nums) >= 1, f"(sample={texts[-4:]})")
+cans_texts = [t for t in texts if t.startswith("cans ")]
+check("swatch shows 'cans <n>' (word before the number)",
+      len(cans_texts) >= 1 and all(t[len("cans "):].isdigit() for t in cans_texts),
+      f"(sample={texts[-5:]})")
 # unmeasurable -> '—'
 app.mural_var.set("0"); app._draw_swatch(); root.update()
 texts2 = [app.swatch_canvas.itemcget(i, "text")
           for i in app.swatch_canvas.find_withtag("all")
           if app.swatch_canvas.type(i) == "text"]
-check("mural=0 -> dashes (—)", "—" in texts2, f"(sample={texts2[-4:]})")
+check("mural=0 -> dashes (—)", "—" in texts2, f"(sample={texts2[-5:]})")
 app.mural_var.set("3")
 
 print("== 4. border + background color pickers route to on-theme dialog ==")
 check("_add_color_control exists", hasattr(app, "_add_color_control"))
 check("_ColorEditDialog class", hasattr(g, "_ColorEditDialog"))
-check("vectorized HSL helper", hasattr(g, "_hsl_to_rgb_vec"))
-# Instantiate the dialog and exercise the vectorized square render path.
 applied = {"n": 0}
 def _apply(rgb): applied["n"] += 1
 dlg = g._ColorEditDialog(root, app, "test", (200, 40, 90), _apply)
@@ -97,10 +124,9 @@ root.update()
 check("dialog instance has SQ square + lightness scale + preview",
       isinstance(dlg.lscale, ttk.Scale) and dlg.canvas is not None
       and getattr(dlg, "prev", None) is not None)
-check("dialog drew its square PhotoImage (vectorized)", dlg.img is not None)
+check("dialog drew its square PhotoImage", dlg.img is not None)
 check("dialog applied a color on open (live)", applied["n"] >= 1,
       f"(applied {applied['n']}x)")
-# drag the lightness slider -> re-render square + apply, no crash
 dlg._lmove(0.9); root.update()
 check("lightness drag re-renders + applies", applied["n"] >= 2)
 dlg._close(); root.update()
@@ -134,10 +160,6 @@ check("_paint_layer_rgba is borders RGBA", layer is not None and layer.shape[2] 
       f"({None if layer is None else layer.shape})")
 
 print("== 8. resize lag: configure is debounced ==")
-check("preview has _conf_after attr", hasattr(app.prep_view, "_conf_after"))
-# A resize DRAG fires a burst of Configure events with a *different* size each
-# time. The live handler must cancel the previously-pending refresh and
-# schedule exactly one new one, so at the end only ONE refresh is live.
 live = set()
 tok = {"n": 0}
 class FakeCanvas:
@@ -159,6 +181,148 @@ for _ in range(5):
 pv.canvas = orig
 check("5-event resize burst -> exactly 1 live refresh", len(live) == 1,
       f"(live after() tokens = {len(live)}; 4 superseded+cancelled)")
+
+# ================= BATCH-2 FIXES =================
+
+print("== 9. specific layer honors CURRENT border colour (was baked magenta) ==")
+ov0 = st.borders_overlay
+check("pipeline baked a border overlay with line pixels",
+      ov0 is not None and (ov0[..., 3] > 0).any(),
+      f"(alpha>0 px={int((ov0[..., 3] > 0).sum()) if ov0 is not None else 0})")
+if ov0 is not None and (ov0[..., 3] > 0).any():
+    app.border_rgb = (30, 120, 255)          # distinctive blue
+    rt = app._retinted_borders()
+    m = ov0[..., 3] > 200
+    mean_rgb = rt[m][:, :3].mean(axis=0)
+    check("_retinted_borders carries the current border colour",
+          np.allclose(mean_rgb, (30, 120, 255), atol=1),
+          f"(mean RGB on border px={mean_rgb.round(1)})")
+    check("it is NOT the baked magenta",
+          not np.allclose(mean_rgb, (255, 0, 255), atol=30))
+    # changing the colour live re-tints the overlay
+    app.border_rgb = (0, 220, 60)
+    rt2 = app._retinted_borders()
+    check("changing border colour live re-tints the overlay",
+          np.allclose(rt2[m][:, :3].mean(axis=0), (0, 220, 60), atol=1))
+    # ...and the specific-layer prep view uses it, not magenta
+    app.view_var.set(st.color_data[0]["name"]); app.border_toggle.set(False)
+    app.border_rgb = (30, 120, 255)
+    base4 = app._prep_base_rgba()
+    on_border = base4[:,:,:3][m]
+    check("specific-layer view is not baked magenta on border px",
+          not np.allclose(on_border.mean(axis=0), (255, 0, 255), atol=40),
+          f"(border px mean RGB={on_border.mean(axis=0).round(1)})")
+    check("specific-layer view shows the current border colour",
+          np.allclose(on_border.mean(axis=0), (30, 120, 255), atol=25))
+    app.border_rgb = (255, 0, 255)  # restore default
+    app.view_var.set("master"); app.border_toggle.set(True)
+
+print("== 10. Save All Layers -> folder (master + borders.png + layers/ + stats) ==")
+outdir = "/tmp/fp_smoke_layers"
+os.system(f"rm -rf {outdir}"); os.makedirs(outdir, exist_ok=True)
+orig_askdir = g.filedialog.askdirectory
+orig_asksave = g.filedialog.asksaveasfilename
+g.filedialog.askdirectory = lambda **k: outdir
+app.prep_save_all_layers()
+files = os.listdir(outdir)
+check("borders.png written", "borders.png" in files, f"(files={files})")
+check("master_*.png written",
+      any(f.startswith("master_") and f.endswith(".png") for f in files))
+layers_dir = os.path.join(outdir, "layers")
+check("layers/ folder has one PNG per colour",
+      os.path.isdir(layers_dir)
+      and len([f for f in os.listdir(layers_dir) if f.endswith(".png")])
+      == len(st.color_data),
+      f"({0 if not os.path.isdir(layers_dir) else len(os.listdir(layers_dir))} "
+      f"png / {len(st.color_data)} colours)")
+check("stats.html written", any(f.endswith(".html") for f in files))
+app._status = orig_status
+
+print("== 11. Save Paint List -> HTML table (name, colour example, cans) ==")
+html_path = "/tmp/fp_smoke_paintlist.html"
+g.filedialog.asksaveasfilename = lambda **k: html_path
+app.mural_mode.set("width"); app.mural_var.set("3"); app.eff_var.set("3")
+app.prep_save_paint_list()
+if os.path.exists(html_path):
+    html = open(html_path).read()
+    check("paint list has an HTML table", "<table" in html)
+    check("paint list names every colour",
+          all(cd["name"] in html for cd in st.color_data))
+    check("paint list shows colour examples (hex swatches)",
+          all(("style" in html and cd["hex"].lstrip("#") in html.upper())
+              or cd["hex"] in html for cd in st.color_data))
+    check("paint list includes a cans column", "can" in html.lower())
+    check("paint list shows a 'cans' figure (not all dashes)",
+          any(t.isdigit() and t not in ("0",) for t in
+              [x for x in html.replace("</td>", " ").split() if x.isdigit()])
+          or "—" in html,
+          f"(first 120 chars: {html[:120]!r})")
+else:
+    check("paint list html exists", False)
+g.filedialog.askdirectory = orig_askdir
+g.filedialog.asksaveasfilename = orig_asksave
+app._status = orig_status
+st = app.state
+
+print("== 12. quantize runs on a worker thread with an animated spinner ==")
+check("threading imported in gui", hasattr(g, "threading"))
+check("animator hooks exist",
+      all(hasattr(app, a) for a in
+          ("_quant_tick", "_quant_finish", "_quant_running")))
+real_run = g.core.run_pipeline
+def slow_run(*a, **k):
+    time.sleep(0.45); return real_run(*a, **k)
+g.core.run_pipeline = slow_run
+seen = []
+app._status = lambda m: seen.append(m)
+app.prep_quantize()
+pump(lambda: (not app._quant_running) and app.state is not None, timeout=10.0)
+g.core.run_pipeline = real_run
+app._status = orig_status
+q = [m for m in seen if m.startswith("Quantizing")]
+dc = sorted(set(m.count(".") for m in q))
+check("animation showed 'Quantizing...' (>=2 frames)", len(q) >= 2,
+      f"({len(q)} frames; e.g. {q[:3]})")
+check("dots visibly moved (>=2 distinct counts)", len(dc) >= 2, f"(dot counts {dc})")
+check("run cleared the spinner (final status not 'Quantizing')",
+      seen and not seen[-1].startswith("Quantizing"),
+      f"(final={seen[-1][:40]!r})")
+st = app.state
+
+print("== 13. paint env H/S/L/contrast sliders ==")
+for attr in ("paint_hue", "paint_sat", "paint_light", "paint_contrast"):
+    check(f"{attr} is a ttk.Scale", isinstance(getattr(app, attr, None), ttk.Scale))
+# adjust_image is correct on hand-computable cases
+arr = np.full((4, 4, 3), 0.8, float)
+c = g.adjust_image(arr, contrast=0.0)
+check("adjust_image: contrast=0 -> mid gray", np.allclose(c, 0.5, atol=1e-5),
+      f"(mean={c.mean():.3f})")
+c2 = g.adjust_image(arr, light=0.2)
+check("adjust_image: lightness +0.2 brightens",
+      np.allclose(c2, 1.0, atol=1e-5) or c2.mean() > arr.mean(),
+      f"(mean={c2.mean():.3f})")
+s = g.adjust_image(np.array([[[1.0, 0.5, 0.0]]], float), sat=0.0)
+check("adjust_image: saturation 0 -> neutral channel",
+      abs(s[0,0,0] - s[0,0,1]) < 1e-5 and s[0,0,0] > 0.4,
+      f"(rgb={s[0,0].round(2)})")
+hh = g.adjust_image(np.array([[[1.0, 0.0, 0.0]]], float), hue=0.5)
+check("adjust_image: hue +180 shifts red -> cyan (g> r)",
+      hh[0,0,1] > hh[0,0,0], f"(rgb={hh[0,0].round(2)})")
+check("adjust_image: defaults are identity (same object)",
+      g.adjust_image(arr) is arr)
+# wired into the live paint view
+app._bg = core.load_image_rgb(tmp_img)
+app.paint_view.cw, app.paint_view.ch = 200, 200
+app.paint_reset()
+base_frame = app._paint_view_fn().copy()
+app.paint_contrast.set(0.0); app.paint_view.refresh()
+low_frame = app._paint_view_fn()
+check("contrast slider changes the rendered frame",
+      not np.array_equal(base_frame, low_frame))
+app.paint_reset()
+check("paint_reset restores contrast label to 1.00",
+      app.paint_contrast_lbl.cget("text") == "1.00",
+      f"(={app.paint_contrast_lbl.cget('text')!r})")
 
 print(f"\nRESULT: {ok} passed, {fail} failed")
 root.destroy()

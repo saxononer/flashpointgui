@@ -37,6 +37,7 @@ import numpy as np
 import os
 import time
 import math
+import threading
 
 import flashpoint_core as core
 
@@ -132,6 +133,61 @@ def _hsl_to_rgb_vec(h, s, l):
     b = np.select(sel, [0, 0, x, c, c, x], default=0)
     out = np.stack([r + m, g + m, b + m], axis=-1) * 255.0
     return np.clip(np.round(out), 0, 255).astype('uint8')
+
+
+# ---- paint-environment colour adjustments (all vectorized, float [0,1]) ----
+
+def _rgb_to_hsv(a):
+    """(H,W,3) float[0,1] -> (H,W,3) H[0,1] S[0,1] V[0,1]."""
+    r, g, b = a[..., 0], a[..., 1], a[..., 2]
+    mx = np.maximum(np.maximum(r, g), b)
+    mn = np.minimum(np.minimum(r, g), b)
+    d = mx - mn
+    h = np.zeros_like(mx)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        m1 = (mx == r) & (d > 0)
+        h[m1] = ((g[m1] - b[m1]) / d[m1]) % 6.0
+        m2 = (mx == g) & (d > 0)
+        h[m2] = (b[m2] - r[m2]) / d[m2] + 2.0
+        m3 = (mx == b) & (d > 0)
+        h[m3] = (r[m3] - g[m3]) / d[m3] + 4.0
+    h = (h / 6.0) % 1.0
+    s = np.where(mx > 0, d / np.where(mx > 0, mx, 1.0), 0.0)
+    return np.stack([h, s, mx], axis=-1)
+
+
+def _hsv_to_rgb(hsv):
+    """(H,W,3) H[0,1] S[0,1] V[0,1] -> (H,W,3) float[0,1]."""
+    h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+    i = (np.floor(h * 6.0) % 6).astype(int)
+    f = h * 6.0 - np.floor(h * 6.0)
+    p = v * (1.0 - s)
+    q = v * (1.0 - f * s)
+    t = v * (1.0 - (1.0 - f) * s)
+    r = np.select([i == 0, i == 1, i == 2, i == 3, i == 4, i == 5],
+                  [v, q, p, p, t, v], default=v)
+    g = np.select([i == 0, i == 1, i == 2, i == 3, i == 4, i == 5],
+                  [t, v, v, q, p, p], default=v)
+    b = np.select([i == 0, i == 1, i == 2, i == 3, i == 4, i == 5],
+                  [p, p, t, v, v, q], default=v)
+    return np.stack([r, g, b], axis=-1)
+
+
+def adjust_image(img, hue=0.0, sat=1.0, light=0.0, contrast=1.0):
+    """Apply hue shift / saturation / lightness / contrast to an (H,W,3) float
+    [0,1] image. Order: contrast -> lightness -> HSV hue+saturation. No-op
+    when all are at their defaults."""
+    if hue == 0.0 and sat == 1.0 and light == 0.0 and contrast == 1.0:
+        return img
+    a = np.clip(img, 0.0, 1.0)
+    a = (a - 0.5) * contrast + 0.5          # contrast around mid-gray
+    a = np.clip(a + light, 0.0, 1.0)        # lightness offset
+    if hue != 0.0 or sat != 1.0:
+        hsv = _rgb_to_hsv(a)
+        hsv[..., 0] = (hsv[..., 0] + hue) % 1.0   # hue shift (turn of a wheel)
+        hsv[..., 1] = np.clip(hsv[..., 1] * sat, 0.0, 1.0)
+        a = _hsv_to_rgb(hsv)
+    return np.clip(a, 0.0, 1.0)
 
 
 def _fit(img, cw, ch):
@@ -295,6 +351,13 @@ class FlashpointApp:
         # core defaults: magenta lines, mid-gray bg)
         self.border_rgb = (255, 0, 255)
         self.bg_rgb = (128, 128, 128)
+        # quantize runs on a background thread; these hold the hand-off so the
+        # main thread can animate the status bar while it computes (and pick
+        # up the finished result) — this is what keeps the UI from freezing.
+        self._quant_running = False
+        self._quant_dots = 0
+        self._quant_result = None
+        self._quant_err = None
 
         self.nb = ttk.Notebook(root)
         self.nb.pack(fill="both", expand=True, padx=8, pady=8)
@@ -468,8 +531,12 @@ class FlashpointApp:
         ttk.Button(vc, text="Reset view",
                    command=lambda: self.prep_view.reset()).grid(
             row=7, column=0, columnspan=2, pady=(4, 4), sticky="ew", padx=6)
-        ttk.Button(vc, text="Save view…", command=self.prep_save).grid(
-            row=8, column=0, columnspan=2, pady=(2, 8), sticky="ew", padx=6)
+        ttk.Button(vc, text="Save", command=self.prep_save).grid(
+            row=8, column=0, columnspan=2, pady=(2, 2), sticky="ew", padx=6)
+        ttk.Button(vc, text="Save All Layers…", command=self.prep_save_all_layers).grid(
+            row=9, column=0, columnspan=2, pady=(2, 2), sticky="ew", padx=6)
+        ttk.Button(vc, text="Save Paint List…", command=self.prep_save_paint_list).grid(
+            row=10, column=0, columnspan=2, pady=(2, 8), sticky="ew", padx=6)
 
         strip = ttk.LabelFrame(p, text="Colors in poster (click a color to adjust)")
         strip.pack(fill="x", padx=6, pady=(2, 2))
@@ -525,8 +592,9 @@ class FlashpointApp:
         if self.image_rgb is None or not self.palette:
             self._status("Need an image AND a palette first.")
             return
-        self._status("Quantizing…")
-        self.root.update()
+        if self._quant_running:
+            self._status("Already quantizing…")
+            return
         try:
             num = int(float(self.num_var.get()))
             mina = int(float(self.min_var.get()))
@@ -534,20 +602,52 @@ class FlashpointApp:
             self._status("Num colors / min area must be whole numbers.")
             return
         exact = bool(self.exact_var.get())
-        t0 = time.time()
-        try:
-            self.state = core.run_pipeline(
-                self.image_rgb, self.palette,
-                num_colors=num, exact=exact, min_area=mina,
-                border_color=core.rgb_to_hex(self.border_rgb),
-                bg_color=core.rgb_to_hex(self.bg_rgb),
-                stem=os.path.splitext(os.path.basename(self.image_path or "image"))[0],
-                palette_name=os.path.basename(self.palette_path or "palette"),
-            )
-        except Exception as e:
-            self.state = None
-            self._status(f"Pipeline failed: {e}")
+        # Snapshot the inputs the worker needs (main-thread reads only).
+        image_rgb = self.image_rgb
+        palette = self.palette
+        border_hex = core.rgb_to_hex(self.border_rgb)
+        bg_hex = core.rgb_to_hex(self.bg_rgb)
+        stem = os.path.splitext(os.path.basename(self.image_path or "image"))[0]
+        pal_name = os.path.basename(self.palette_path or "palette")
+
+        def worker():
+            try:
+                st = core.run_pipeline(
+                    image_rgb, palette, num_colors=num, exact=exact,
+                    min_area=mina, border_color=border_hex, bg_color=bg_hex,
+                    stem=stem, palette_name=pal_name)
+                self._quant_result = st
+            except Exception as e:
+                self._quant_err = e
+
+        self._quant_result = None
+        self._quant_err = None
+        self._quant_dots = 0
+        self._quant_running = True
+        self._status("Quantizing" + "." * self._quant_dots)
+        threading.Thread(target=worker, daemon=True).start()
+        self.root.after(110, self._quant_tick)
+
+    def _quant_tick(self):
+        """Animate the 'Quantizing…' status while the pipeline runs on its
+        background thread. The main thread stays free, so the window keeps
+        responding and the dots actually move."""
+        if not self._quant_running:
             return
+        if self._quant_result is not None or self._quant_err is not None:
+            self._quant_finish()
+            return
+        self._quant_dots = (self._quant_dots + 1) % 4
+        self._status("Quantizing" + "." * self._quant_dots)
+        self.root.after(110, self._quant_tick)
+
+    def _quant_finish(self):
+        self._quant_running = False
+        if self._quant_err is not None:
+            self.state = None
+            self._status(f"Pipeline failed: {self._quant_err}")
+            return
+        self.state = self._quant_result
         self._edit_cid = None
         self._epoch += 1
         self._prep_zoom_cache = None
@@ -557,14 +657,6 @@ class FlashpointApp:
         self.prep_view.reset()
         K = len(self.palette)
         used = len(self.state.color_data)
-        mode = "full palette" if exact else f"top-{num} dominant"
-        self._log(f"[quantize] {os.path.basename(self.image_path)} -> "
-                  f"{self.state.W}x{self.state.H} · {mode}")
-        self._log(f"           {used} of {K} palette color(s) survived "
-                  f"({K - used} had no region) in {time.time() - t0:.2f}s")
-        for cd in sorted(self.state.color_data, key=lambda c: -int(c['mask'].sum())):
-            pct = 100.0 * int(cd['mask'].sum()) / (self.state.W * self.state.H)
-            self._log(f"           · {cd['name']:<14} {cd['hex']}  {pct:5.1f}%")
         self._status(self._quantized_status(used))
 
     # ---- cans math (mirrors the interactive stats.html report) ----
@@ -674,17 +766,34 @@ class FlashpointApp:
             else:
                 base = core.render_master(st, st.palette_rgb)
         else:
-            ov = st.borders_overlay if st.borders_overlay is not None \
-                else np.zeros((st.H, st.W, 4), dtype=np.float32)
             cd = next(c for c in st.color_data if c["name"] == v)
             base = core.render_layer_png(cd["mask"],
                                          np.array(cd["rgb"], dtype="uint8"),
-                                         st.W, st.H, self.bg_rgb, ov)
+                                         st.W, st.H, self.bg_rgb,
+                                         self._retinted_borders())
         base = np.asarray(base)
         if base.ndim == 3 and base.shape[2] == 3:
             a = np.full(base.shape[:2], 255, dtype="uint8")
             base = np.dstack([base, a])
         return base.astype("uint8")
+
+    def _retinted_borders(self):
+        """The border overlay re-tinted to the CURRENT border colour.
+
+        The pipeline bakes `borders_overlay` with a fixed magenta; the master
+        and borders views re-tint on the fly, but the per-layer render was
+        using the raw baked array — so a specific layer always showed magenta
+        lines. Copy the overlay (keeps its alpha/coverage) and overwrite its
+        three RGB channels with the user's border colour.
+        """
+        st = self.state
+        if st is None or st.borders_overlay is None:
+            return np.zeros((st.H, st.W, 4), dtype=np.float32)
+        out = st.borders_overlay.astype(np.float32).copy()
+        out[:, :, 0] = self.border_rgb[0]
+        out[:, :, 1] = self.border_rgb[1]
+        out[:, :, 2] = self.border_rgb[2]
+        return out
 
     def _prep_view_fn(self):
         st = self.state
@@ -751,6 +860,103 @@ class FlashpointApp:
             except Exception as e:
                 self._status(f"Save failed: {e}")
 
+    def prep_save_all_layers(self):
+        """Save a folder containing master, borders.png and every per-color
+        layer (re-tinted to the current border colour). Reuses core.write_outputs
+        so the GUI output is byte-identical to the CLI's.
+        """
+        if self.state is None:
+            self._status("Nothing to save — run Quantize first.")
+            return
+        d = filedialog.askdirectory(title="Save all layers to this folder")
+        if not d:
+            return
+        try:
+            master, borders, written, stats = core.write_outputs(
+                self.state, d,
+                border_color=core.rgb_to_hex(self.border_rgb),
+                bg_color=core.rgb_to_hex(self.bg_rgb))
+            self._status(f"Saved {len(written)} layers + master + borders → {d}")
+        except Exception as e:
+            self._status(f"Save all layers failed: {e}")
+
+    def prep_save_paint_list(self):
+        """Save a simple static HTML table: colour name, colour example,
+        number of cans. Cans use the current mural measure + coverage, same
+        math as the swatches.
+        """
+        if self.state is None:
+            self._status("Nothing to save — run Quantize first.")
+            return
+        path = filedialog.asksaveasfilename(
+            title="Save paint list", defaultextension=".html",
+            initialfile="paint_list.html",
+            filetypes=[("HTML", "*.html"), ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            total_px = self.state.W * self.state.H
+            rows = []
+            for cd in sorted(self.state.color_data,
+                             key=lambda c: -int(c["mask"].sum())):
+                pct = 100.0 * int(cd["mask"].sum()) / total_px
+                cans = self._cans_for_pct(pct)
+                rows.append((cd["name"], cd["hex"],
+                             "—" if cans is None else str(cans)))
+            total = self._total_cans()
+            mural = self._mural_dims()
+            sub = f"mural {mural[0]:g} m {'wide' if self.mural_mode.get()=='width' else 'tall'}" \
+                  if mural else "no mural measurement set"
+            self._write_paint_list_html(path, rows,
+                                        "—" if total is None else str(total), sub)
+            self._status(f"Saved paint list → {path}")
+        except Exception as e:
+            self._status(f"Save paint list failed: {e}")
+
+    @staticmethod
+    def _write_paint_list_html(path, rows, total, sub):
+        trs = []
+        for name, hexc, cans in rows:
+            esc = name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            trs.append(
+                f'      <tr><td><span class="sw" style="background:{hexc}"></span>'
+                f'{esc}</td><td class="c">{cans}</td></tr>')
+        body = "\n".join(trs)
+        html = f"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paint list</title>
+<style>
+  body {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+         font-size: 15px; color: #000; background: #fff; margin: 0; padding: 24px; }}
+  h1 {{ font-size: 16px; font-weight: 600; margin: 0 0 4px; }}
+  .sub {{ font-size: 12px; color: #444; margin-bottom: 18px; }}
+  table {{ border-collapse: collapse; }}
+  th, td {{ border: 1px solid #888; padding: 5px 12px; text-align: left; }}
+  td.c {{ text-align: right; }}
+  th {{ font-weight: 600; }}
+  .sw {{ display: inline-block; width: 14px; height: 14px; vertical-align: -2px;
+         margin-right: 9px; border: 1px solid #000; }}
+  tfoot td {{ font-weight: 600; }}
+</style>
+</head>
+<body>
+  <h1>Paint list</h1>
+  <div class="sub">{sub}</div>
+  <table>
+    <thead><tr><th>Colour</th><th class="c">Cans</th></tr></thead>
+    <tbody>
+{body}
+    </tbody>
+    <tfoot><tr><td>Total</td><td class="c">{total}</td></tr></tfoot>
+  </table>
+</body>
+</html>
+"""
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(html)
+
     # ---- swatches ----
     def _build_swatch(self):
         self._swatch_order = [cd["ci"] for cd in
@@ -778,7 +984,7 @@ class FlashpointApp:
             cv.create_text(x + 29, 51, text=cd["name"][:13],
                            font=("TkDefaultFont", 7))
             cans = self._cans_for_pct(pct)
-            canstxt = "—" if cans is None else str(cans)
+            canstxt = "—" if cans is None else f"cans {cans}"
             cv.create_text(x + 29, 63, text=canstxt,
                            font=("TkDefaultFont", 7), fill="#555")
             cv.tag_bind(r, "<Button-1>", lambda e, ci=ci: self._swatch_click(ci))
@@ -862,12 +1068,32 @@ class FlashpointApp:
                                      width=16, values=BLENDS)
         self.blend_cb.grid(row=6, column=1, sticky="ew", padx=6)
         self.blend_cb.bind("<<ComboboxSelected>>", lambda e: self.paint_view.refresh())
+        ttk.Separator(vc, orient="horizontal").grid(row=7, column=0, columnspan=2,
+                                                    sticky="ew", padx=6, pady=6)
+        ttk.Label(vc, text="Colour adjust").grid(row=8, column=0, columnspan=2,
+                                                 sticky="w", padx=6)
+        self.paint_hue_lbl = ttk.Label(vc, text="0.00")
+        self.paint_hue = self._slider(vc, 9, "Hue", -0.5, 0.5, 0.0,
+                                      self.paint_hue_lbl,
+                                      lambda v: self.paint_view.refresh())
+        self.paint_sat_lbl = ttk.Label(vc, text="1.00")
+        self.paint_sat = self._slider(vc, 10, "Saturation", 0.0, 2.0, 1.0,
+                                      self.paint_sat_lbl,
+                                      lambda v: self.paint_view.refresh())
+        self.paint_light_lbl = ttk.Label(vc, text="0.00")
+        self.paint_light = self._slider(vc, 11, "Lightness", -0.5, 0.5, 0.0,
+                                        self.paint_light_lbl,
+                                        lambda v: self.paint_view.refresh())
+        self.paint_contrast_lbl = ttk.Label(vc, text="1.00")
+        self.paint_contrast = self._slider(vc, 12, "Contrast", 0.0, 2.0, 1.0,
+                                           self.paint_contrast_lbl,
+                                           lambda v: self.paint_view.refresh())
         ttk.Button(vc, text="Reset placement",
                    command=self.paint_reset).grid(
-            row=7, column=0, columnspan=2, sticky="ew", padx=6, pady=(10, 2))
-        ttk.Button(vc, text="Save composition…",
+            row=13, column=0, columnspan=2, sticky="ew", padx=6, pady=(10, 2))
+        ttk.Button(vc, text="Save",
                    command=self.paint_save).grid(
-            row=8, column=0, columnspan=2, sticky="ew", padx=6, pady=(2, 8))
+            row=14, column=0, columnspan=2, sticky="ew", padx=6, pady=(2, 8))
 
     def _slider(self, parent, row, label, lo, hi, val, lbl, on_change):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=6)
@@ -933,9 +1159,17 @@ class FlashpointApp:
         self.paint_scale.set("1.0")
         self.paint_rot.set("0")
         self.paint_opacity.set(1.0)
+        self.paint_hue.set(0.0)
+        self.paint_sat.set(1.0)
+        self.paint_light.set(0.0)
+        self.paint_contrast.set(1.0)
         self.paint_scale_lbl.config(text="1.00×")
         self.paint_rot_lbl.config(text="0°")
         self.paint_op_lbl.config(text="1.00")
+        self.paint_hue_lbl.config(text="0.00")
+        self.paint_sat_lbl.config(text="1.00")
+        self.paint_light_lbl.config(text="0.00")
+        self.paint_contrast_lbl.config(text="1.00")
         self._paint_transform_cache = None
         self.paint_view.refresh()
 
@@ -965,9 +1199,15 @@ class FlashpointApp:
         rot = float(self.paint_rot.get())
         opacity = float(self.paint_opacity.get())
         blend = self.blend_var.get()
+        adj = (float(self.paint_hue.get()), float(self.paint_sat.get()),
+               float(self.paint_light.get()), float(self.paint_contrast.get()))
         self.paint_scale_lbl.config(text=f"{scale:.2f}×")
         self.paint_rot_lbl.config(text=f"{rot:.0f}°")
         self.paint_op_lbl.config(text=f"{opacity:.2f}")
+        self.paint_hue_lbl.config(text=f"{adj[0]:.2f}")
+        self.paint_sat_lbl.config(text=f"{adj[1]:.2f}")
+        self.paint_light_lbl.config(text=f"{adj[2]:.2f}")
+        self.paint_contrast_lbl.config(text=f"{adj[3]:.2f}")
         if layer is None:
             return (bg * 255).clip(0, 255).astype("uint8")
 
@@ -1009,6 +1249,8 @@ class FlashpointApp:
             bot = out[sy0:ey, sx0:ex]
             sub = top if blend == "normal" else core._blend(top, bot, blend)
             out[sy0:ey, sx0:ex] = bot * (1 - a) + sub * a
+        if adj != (0.0, 1.0, 0.0, 1.0):
+            out = adjust_image(out, adj[0], adj[1], adj[2], adj[3])
         return (out * 255).clip(0, 255).astype("uint8")
 
     def paint_save(self):
