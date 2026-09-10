@@ -2,7 +2,7 @@
 
 Covers the original 9 fixes PLUS the batch-2 changes:
   - specific-layer prep view honors the CURRENT border colour (was fixed magenta)
-  - swatches show "cans <n>" (not a bare number)
+  - swatches show "<n> can(s)" (number before the word)
   - Save All Layers -> folder (master + borders.png + layers/ + stats.html)
   - Save Paint List -> static HTML table (name, colour example, cans)
   - quantize runs on a worker thread with an animated "Quantizing..." spinner
@@ -102,9 +102,9 @@ app._draw_swatch(); root.update()
 texts = [app.swatch_canvas.itemcget(i, "text")
          for i in app.swatch_canvas.find_withtag("all")
          if app.swatch_canvas.type(i) == "text"]
-cans_texts = [t for t in texts if t.startswith("cans ")]
-check("swatch shows 'cans <n>' (word before the number)",
-      len(cans_texts) >= 1 and all(t[len("cans "):].isdigit() for t in cans_texts),
+cans_texts = [t for t in texts if t.endswith(" can(s)")]
+check("swatch shows '<n> can(s)' (number before the word)",
+      len(cans_texts) >= 1 and all(t[: -len(" can(s)")].isdigit() for t in cans_texts),
       f"(sample={texts[-5:]})")
 # unmeasurable -> '—'
 app.mural_var.set("0"); app._draw_swatch(); root.update()
@@ -323,6 +323,30 @@ app.paint_reset()
 check("paint_reset restores contrast label to 1.00",
       app.paint_contrast_lbl.cget("text") == "1.00",
       f"(={app.paint_contrast_lbl.cget('text')!r})")
+
+print("== 14. manual recolor renames the swatch to the new hex ==")
+# pick a color, edit it to a distinctive RGB via the live apply path, and
+# confirm the swatch name / dropdown follow the new hex (not the old palette name)
+st = app.state
+target = st.color_data[0]
+oldname = target["name"]
+newrgb = (11, 22, 33)
+app._edit_cid = target["ci"]
+# view the target layer, then recolor it -> dropdown must track the rename
+app.view_var.set(oldname)
+app._apply_color(newrgb)
+root.update()
+check("recolor sets the swatch name to the new hex",
+      target["name"] == core.rgb_to_hex(newrgb),
+      f"(old={oldname!r} new={target['name']!r})")
+check("recolor also updates cd['hex']",
+      target["hex"] == core.rgb_to_hex(newrgb), f"(hex={target['hex']!r})")
+check("layer dropdown tracks the rename (still points at this layer)",
+      app.view_var.get() == core.rgb_to_hex(newrgb),
+      f"(view={app.view_var.get()!r})")
+check("dropdown values contain the new hex name",
+      core.rgb_to_hex(newrgb) in list(app.view_cb.cget("values")))
+app._edit_cid = None
 
 print(f"\nRESULT: {ok} passed, {fail} failed")
 root.destroy()

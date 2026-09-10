@@ -984,7 +984,7 @@ class FlashpointApp:
             cv.create_text(x + 29, 51, text=cd["name"][:13],
                            font=("TkDefaultFont", 7))
             cans = self._cans_for_pct(pct)
-            canstxt = "—" if cans is None else f"cans {cans}"
+            canstxt = "—" if cans is None else f"{cans} can(s)"
             cv.create_text(x + 29, 63, text=canstxt,
                            font=("TkDefaultFont", 7), fill="#555")
             cv.tag_bind(r, "<Button-1>", lambda e, ci=ci: self._swatch_click(ci))
@@ -1014,8 +1014,19 @@ class FlashpointApp:
             return
         st = self.state
         cd = next(c for c in st.color_data if c["ci"] == ci)
+        newname = core.rgb_to_hex(rgb)
+        renamed = (cd["name"] != newname)
+        # keep the layer dropdown (keyed by name) pointing at THIS layer if it
+        # happens to be the one being viewed while we rename it
+        if renamed and self.view_var.get() == cd["name"]:
+            self.view_var.set(newname)
         cd["rgb"] = rgb
-        cd["hex"] = core.rgb_to_hex(rgb)
+        cd["hex"] = newname
+        if renamed:
+            # manual recolor -> the swatch now IS the hex, so stats.html / paint
+            # list / layer names never carry a stale palette name
+            cd["name"] = newname
+            self._build_view_menu()
         idx = st.active_idx[ci]
         st.palette_rgb[idx] = np.array(rgb, dtype="uint8")
         self.palette[idx][1] = rgb
