@@ -6,17 +6,18 @@ Two workspaces (a Notebook):
   PREP    Build the poster.
           - inputs: image, palette, num colors, min area (paths shown inline)
           - [Quantize] runs the pipeline
-          - a zoomable / pannable preview (wheel = zoom, drag = pan, reset)
-          - a dropdown picks what to view: master / borders / any layer
+          - a zoomable / pannable preview (zoom slider or wheel, drag = pan, reset)
+          - a dropdown picks what to view: master / borders
           - a border-overlay toggle for judging complexity
           - [Save] writes the currently-viewed image to a file
-          - a strip of the colors actually USED in the poster (pixel % each);
-            click one -> an HSL slider-set nudges it and the preview updates
-            live (the pipeline is cached, only the render re-runs).
+          - a strip of the colors actually USED in the poster (can count each,
+            derived from the mural size + can-coverage); click one -> an HSL
+            editor nudges it and the preview updates live (the pipeline is
+            cached, only the render re-runs).
 
   PAINT   Position the result over a wall photo.
           - [Upload background]
-          - a dropdown picks the layer to place (defaults to borders)
+          - the overlay is always borders.png (the layer picker was removed)
           - move (drag the canvas) + scale + rotate sliders
           - opacity + blend-mode
           - [Save] the composited result
@@ -35,6 +36,7 @@ from PIL import Image
 import numpy as np
 import os
 import time
+import math
 
 import flashpoint_core as core
 
@@ -112,6 +114,26 @@ def _resize(arr, w, h):
                                                    Image.BILINEAR))
 
 
+def _hsl_to_rgb_vec(h, s, l):
+    """Vectorized HSL->RGB for numpy arrays; returns (H,W,3) uint8.
+
+    Replaces the per-pixel Python loop the old color square used (~3k scalar
+    hsl_to_rgb calls per lightness change) — the square now computes in one
+    numpy pass, so dragging lightness stays responsive.
+    """
+    h = np.mod(h, 1.0)
+    c = (1.0 - np.abs(2.0 * l - 1.0)) * s
+    hp = h * 6.0
+    x = c * (1.0 - np.abs((hp % 2.0) - 1.0))
+    m = l - c / 2.0
+    sel = [hp < 1, hp < 2, hp < 3, hp < 4, hp < 5, hp < 6]
+    r = np.select(sel, [c, x, 0, 0, x, c], default=c)
+    g = np.select(sel, [0, c, c, x, 0, 0], default=0)
+    b = np.select(sel, [0, 0, x, c, c, x], default=0)
+    out = np.stack([r + m, g + m, b + m], axis=-1) * 255.0
+    return np.clip(np.round(out), 0, 255).astype('uint8')
+
+
 def _fit(img, cw, ch):
     """Center-fit an (h,w,c) image into a (ch,cw) box (bg 0). Returns (out,box)
     where box=(ox,oy,nw,nh)."""
@@ -144,6 +166,7 @@ class _Preview:
         self._img = None
         self._img_ref = None
         self._last = None
+        self._conf_after = None
         canvas.bind("<Configure>", self._on_configure)
         canvas.bind("<Button-4>", lambda e: self._step(+1))
         canvas.bind("<Button-5>", lambda e: self._step(-1))
@@ -176,7 +199,14 @@ class _Preview:
         w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
         if w > 2 and h > 2 and (w != self.cw or h != self.ch):
             self.cw, self.ch = w, h
-            self.refresh()
+            # Debounce: dragging a window border fires a burst of Configure
+            # events; each would re-resize + re-put the whole frame (the resize
+            # lag). Coalesce to a single refresh shortly after the last event.
+            try:
+                self.canvas.after_cancel(self._conf_after)
+            except Exception:
+                pass
+            self._conf_after = self.canvas.after(40, self.refresh)
 
     def refresh(self):
         if self._img is None:
@@ -214,6 +244,10 @@ class _Preview:
         self.panx = cx - sx * new
         self.pany = cy - sy * new
         self.refresh()
+
+    def set_zoom(self, new):
+        """Absolute zoom (slider) that keeps the canvas center fixed."""
+        self._zoom_to(float(new))
 
     def _drag(self, e):
         if self._last is None:
@@ -280,39 +314,47 @@ class FlashpointApp:
         self.status.config(text=text)
 
     def _log(self, text):
-        """Append a line to the read-only Log box (kept visible under the
-        input section). Terminal-style: dark bg, monospace, auto-scroll."""
-        box = getattr(self, "log_text", None)
-        if box is None:
-            return
-        box.configure(state="normal")
-        box.insert("end", text + "\n")
-        box.see("end")
-        box.configure(state="disabled")
+        """No-op: the Log box was removed. Kept so old call sites stay valid."""
+        return
 
     # ---- color pickers (border / background) ----
-    def _add_color_control(self, parent, name, rgb, callback):
-        """A small clickable swatch + hex label that opens a color chooser and
-        calls callback(new_rgb) on accept."""
-        hexc = core.rgb_to_hex(rgb)
+    def _add_color_control(self, parent, name, get_rgb, set_rgb):
+        """A clickable swatch + hex label that opens the on-theme HSL color
+        editor (same dialog as the poster-color strip) and applies changes
+        live via set_rgb. get_rgb supplies the CURRENT color when reopening.
+
+        The old path used tk.colorchooser.askcolor, which is flaky on this Tk
+        9.0 / Wayland build (often opens nothing) and is off-theme anyway; the
+        shared in-app editor sidesteps both.
+        """
+        hexc = core.rgb_to_hex(get_rgb())
         box = ttk.Frame(parent); box.pack(side="left", padx=8)
-        sw = tk.Canvas(box, width=28, height=20, highlightthickness=0)
+        sw = tk.Canvas(box, width=28, height=20, highlightthickness=0, bg="#1a1a1a")
         sw.pack(side="left")
-        sw.create_rectangle(0, 0, 28, 20, fill=hexc, outline="#555", width=1)
-        lbl = ttk.Label(box, text=hexc, width=8)
+        rect = sw.create_rectangle(0, 0, 28, 20, fill=hexc, outline="#555", width=1)
+        lbl = ttk.Label(box, text=hexc, width=9)
         lbl.pack(side="left")
 
-        def pick(_=None):
-            res = tk.colorchooser.askcolor(color=hexc, title=name + " color")
-            if not res or res[1] in (None, ""):
-                return
-            newrgb = tuple(int(v) for v in res[0])  # (r,g,b) int
-            sw.itemconfig(sw.find_all()[0], fill=core.rgb_to_hex(newrgb))
-            lbl.config(text=core.rgb_to_hex(newrgb))
-            callback(newrgb)
+        def open_picker(_=None):
+            if self._color_edit_dialog is not None:
+                try:
+                    if self._color_edit_dialog.winfo_exists():
+                        self._color_edit_dialog.destroy()
+                except Exception:
+                    pass
+                self._color_edit_dialog = None
 
-        sw.bind("<Button-1>", pick)
-        lbl.bind("<Button-1>", pick)
+            def apply(rgb):
+                h = core.rgb_to_hex(rgb)
+                sw.itemconfig(rect, fill=h)
+                lbl.config(text=h)
+                set_rgb(rgb)
+
+            self._color_edit_dialog = _ColorEditDialog(
+                self.root, self, name, tuple(get_rgb()), apply)
+
+        sw.bind("<Button-1>", open_picker)
+        lbl.bind("<Button-1>", open_picker)
 
     def _set_border_rgb(self, rgb):
         self.border_rgb = rgb
@@ -352,35 +394,54 @@ class FlashpointApp:
         ttk.Label(r2, text="Num colors:").pack(side="left")
         self.num_var = tk.StringVar(value="10")
         ttk.Spinbox(r2, textvariable=self.num_var, from_=2, to=64, width=5,
-                    state="readonly").pack(side="left", padx=(4, 8))
+                    increment=1).pack(side="left", padx=(4, 8))
         self.exact_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(r2, text="Full palette (ignore num colors)",
                         variable=self.exact_var).pack(side="left", padx=(0, 16))
         ttk.Label(r2, text="Min area:").pack(side="left")
         self.min_var = tk.StringVar(value="50")
         ttk.Spinbox(r2, textvariable=self.min_var, from_=0, to=100000, width=7,
-                    state="readonly").pack(side="left", padx=(4, 16))
+                    increment=1).pack(side="left", padx=(4, 16))
         ttk.Button(r2, text="Quantize", command=self.prep_quantize,
                    style="Accent.TButton").pack(side="left", padx=(16, 0))
 
+        r2b = ttk.Frame(inp); r2b.pack(fill="x", padx=6, pady=(2, 2))
+        ttk.Label(r2b, text="Mural:").pack(side="left")
+        self.mural_mode = tk.StringVar(value="width")
+        ttk.Radiobutton(r2b, text="width", variable=self.mural_mode, value="width",
+                        command=self._swatch_changed).pack(side="left")
+        ttk.Radiobutton(r2b, text="height", variable=self.mural_mode, value="height",
+                        command=self._swatch_changed).pack(side="left", padx=(0, 8))
+        ttk.Label(r2b, text="(m):").pack(side="left")
+        self.mural_var = tk.StringVar(value="3")
+        mural_sp = ttk.Spinbox(r2b, textvariable=self.mural_var, from_=0, to=10000,
+                               increment=0.1, width=6)
+        mural_sp.pack(side="left", padx=(4, 12))
+        mural_sp.bind("<Return>", self._swatch_changed)
+        mural_sp.bind("<FocusOut>", self._swatch_changed)
+        ttk.Label(r2b, text="Can coverage (m²/can):").pack(side="left")
+        self.eff_var = tk.StringVar(value="3")
+        eff_sp = ttk.Spinbox(r2b, textvariable=self.eff_var, from_=0, to=10000,
+                             increment=0.1, width=6)
+        eff_sp.pack(side="left", padx=(4, 0))
+        eff_sp.bind("<Return>", self._swatch_changed)
+        eff_sp.bind("<FocusOut>", self._swatch_changed)
+
         r3 = ttk.Frame(inp); r3.pack(fill="x", padx=6, pady=(2, 6))
         ttk.Label(r3, text="Border color:").pack(side="left")
-        self._add_color_control(r3, "Border", self.border_rgb, self._set_border_rgb)
+        self._add_color_control(r3, "Border", lambda: self.border_rgb, self._set_border_rgb)
         ttk.Label(r3, text="Background:").pack(side="left", padx=(20, 0))
-        self._add_color_control(r3, "Background", self.bg_rgb, self._set_bg_rgb)
-
-        logf = ttk.LabelFrame(p, text="Log")
-        logf.pack(fill="x", padx=6, pady=(0, 2))
-        self.log_text = tk.Text(logf, height=4, wrap="none", state="disabled",
-                                bg="#0e0e0e", fg="#cfe3c4", relief="flat",
-                                font=("TkFixedFont", 9), padx=4, pady=3)
-        self.log_text.pack(fill="x", padx=4, pady=3)
-        self._log("Ready. Load an image + palette, then Quantize.")
+        self._add_color_control(r3, "Background", lambda: self.bg_rgb, self._set_bg_rgb)
 
         body = ttk.Frame(p)
         body.pack(fill="both", expand=True, padx=6, pady=2)
         self.prep_canvas = tk.Canvas(body, bg="#1a1a1a", highlightthickness=0)
         self.prep_canvas.pack(side="left", fill="both", expand=True)
+
+        # Create the preview BEFORE the View panel so the zoom slider's
+        # build-time .set() has a live target (its command fires immediately).
+        self._zoom_syncing = False
+        self.prep_view = _Preview(self.prep_canvas, self._prep_view_fn)
 
         vc = ttk.LabelFrame(body, text="View")
         vc.pack(side="right", fill="y", padx=(8, 2))
@@ -397,15 +458,18 @@ class FlashpointApp:
             row=2, column=0, columnspan=2, sticky="w", padx=6, pady=6)
         ttk.Separator(vc, orient="horizontal").grid(row=3, column=0, columnspan=2,
                                                     sticky="ew", padx=6, pady=4)
+        ttk.Label(vc, text="Zoom").grid(row=4, column=0, columnspan=2, sticky="w", padx=6)
+        self.zoom_scale = ttk.Scale(vc, from_=0.2, to=8.0, orient="horizontal",
+                                    command=self._zoom_from_slider)
+        self.zoom_scale.grid(row=5, column=0, columnspan=2, sticky="ew", padx=6)
+        self.zoom_scale.set(1.0)
         self.zoom_lbl = ttk.Label(vc, text="zoom 1.00×")
-        self.zoom_lbl.grid(row=4, column=0, columnspan=2, sticky="w", padx=6)
+        self.zoom_lbl.grid(row=6, column=0, columnspan=2, sticky="w", padx=6)
         ttk.Button(vc, text="Reset view",
                    command=lambda: self.prep_view.reset()).grid(
-            row=5, column=0, columnspan=2, pady=(2, 4), sticky="ew", padx=6)
+            row=7, column=0, columnspan=2, pady=(4, 4), sticky="ew", padx=6)
         ttk.Button(vc, text="Save view…", command=self.prep_save).grid(
-            row=6, column=0, columnspan=2, pady=(2, 8), sticky="ew", padx=6)
-
-        self.prep_view = _Preview(self.prep_canvas, self._prep_view_fn)
+            row=8, column=0, columnspan=2, pady=(2, 8), sticky="ew", padx=6)
 
         strip = ttk.LabelFrame(p, text="Colors in poster (click a color to adjust)")
         strip.pack(fill="x", padx=6, pady=(2, 2))
@@ -490,7 +554,6 @@ class FlashpointApp:
         self._paint_transform_cache = None
         self._build_view_menu()
         self._build_swatch()
-        self._build_paint_menu()
         self.prep_view.reset()
         K = len(self.palette)
         used = len(self.state.color_data)
@@ -502,19 +565,98 @@ class FlashpointApp:
         for cd in sorted(self.state.color_data, key=lambda c: -int(c['mask'].sum())):
             pct = 100.0 * int(cd['mask'].sum()) / (self.state.W * self.state.H)
             self._log(f"           · {cd['name']:<14} {cd['hex']}  {pct:5.1f}%")
-        self._status(f"Quantized — {used} colors used. Wheel to zoom, drag to pan.")
+        self._status(self._quantized_status(used))
+
+    # ---- cans math (mirrors the interactive stats.html report) ----
+    # The mural's second dimension is derived from the image's aspect ratio, so
+    # only ONE real-world number (width OR height in metres) is needed. The
+    # per-color estimate is ceil(color_wall_area / can_coverage), exactly as the
+    # CLI's stats.html computes it.
+    def _mural_dims(self):
+        """Return (m, eff, ar) or None if no usable mural measurement.
+
+        m    = the user's mural dimension in metres (width or height)
+        eff  = can coverage in m^2/can
+        ar   = image aspect ratio (width / height)
+        """
+        st = self.state
+        if st is None:
+            return None
+        try:
+            m = float(self.mural_var.get())
+        except (ValueError, tk.TclError):
+            m = 0.0
+        try:
+            eff = float(self.eff_var.get())
+        except (ValueError, tk.TclError):
+            eff = 0.0
+        if m <= 0:
+            return None
+        W, H = st.W, st.H
+        ar = (W / H) if H else 1.0
+        return m, eff, ar
+
+    def _cans_for_pct(self, pct):
+        """Cans for a colour covering `pct`% of the image. Returns an int, or
+        None when no mural measurement is set (rendered as "—")."""
+        d = self._mural_dims()
+        if d is None:
+            return None
+        m, eff, ar = d
+        total = m * (m / ar) if self.mural_mode.get() == "width" else (m * ar) * m
+        wall = total * (pct / 100.0)
+        if eff <= 0:
+            return 0
+        return max(0, math.ceil(wall / eff - 1e-9))
+
+    def _total_cans(self):
+        """Sum of cans across all surviving colours, or None if not measurable."""
+        st = self.state
+        if st is None:
+            return None
+        total_px = st.W * st.H
+        t = 0
+        anymeas = False
+        for cd in st.color_data:
+            pct = 100.0 * int(cd["mask"].sum()) / total_px
+            c = self._cans_for_pct(pct)
+            if c is None:
+                return None
+            anymeas = True
+            t += c
+        return t if anymeas else None
+
+    def _quantized_status(self, used):
+        base = f"Quantized — {used} colors used. Slider to zoom, drag to pan."
+        t = self._total_cans()
+        if t is not None:
+            base += f"  ·  {t} can(s) total"
+        return base
+
+    def _swatch_changed(self, _=None):
+        """Mural measure / efficiency / width-height changed: redraw the can
+        counts under each swatch and refresh the status total."""
+        if self.state is None:
+            return
+        self._draw_swatch()
+        self._status(self._quantized_status(len(self.state.color_data)))
+
+    def _zoom_from_slider(self, v):
+        """Zoom slider -> preview. Guarded so the build-time .set(1.0) and any
+        pre-realization event are no-ops (canvas still 2x2)."""
+        if self.prep_view is None or self.prep_view.cw <= 2:
+            return
+        self._zoom_syncing = True
+        try:
+            self.prep_view.set_zoom(float(v))
+        finally:
+            self._zoom_syncing = False
 
     def _build_view_menu(self):
         vals = ["master", "borders"] + [cd["name"] for cd in self.state.color_data]
         self.view_cb.config(values=vals)
         if self.view_var.get() not in vals:
             self.view_var.set("master")
-
-    def _build_paint_menu(self):
-        vals = ["borders", "master"] + [cd["name"] for cd in self.state.color_data]
-        self.layer_cb.config(values=vals)
-        if self.layer_var.get() not in vals:
-            self.layer_var.set("borders")
 
     def _prep_base_rgba(self):
         """Native-resolution (H,W,4) view of the selected item.
@@ -551,6 +693,16 @@ class FlashpointApp:
             return np.zeros((ch, cw, 4), dtype="uint8")
         z = self.prep_view.zoom
         self.zoom_lbl.config(text=f"zoom {z:.2f}×")
+        # Keep the zoom slider in sync when zoom changes via wheel/drag.
+        zs = getattr(self, "zoom_scale", None)
+        if zs is not None and not self._zoom_syncing:
+            try:
+                if abs(float(zs.get()) - z) > 0.01:
+                    self._zoom_syncing = True
+                    zs.set(z)
+                    self._zoom_syncing = False
+            except tk.TclError:
+                self._zoom_syncing = False
         # Cache the zoomed+centered base. Content changes bump _epoch; zoom/
         # canvas size are part of the key; pan is applied cheaply on top.
         key = (self._epoch, self.view_var.get(), self.border_toggle.get(),
@@ -625,7 +777,9 @@ class FlashpointApp:
                                     width=2 if sel else 1)
             cv.create_text(x + 29, 51, text=cd["name"][:13],
                            font=("TkDefaultFont", 7))
-            cv.create_text(x + 29, 63, text=f"{pct:.1f}%",
+            cans = self._cans_for_pct(pct)
+            canstxt = "—" if cans is None else str(cans)
+            cv.create_text(x + 29, 63, text=canstxt,
                            font=("TkDefaultFont", 7), fill="#555")
             cv.tag_bind(r, "<Button-1>", lambda e, ci=ci: self._swatch_click(ci))
             x += 66
@@ -689,12 +843,8 @@ class FlashpointApp:
         ttk.Button(vc, text="Upload background…",
                    command=self.paint_pick_bg).grid(
             row=0, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 2))
-        ttk.Label(vc, text="Layer:").grid(row=1, column=0, sticky="w", padx=6)
-        self.layer_var = tk.StringVar(value="borders")
-        self.layer_cb = ttk.Combobox(vc, textvariable=self.layer_var, state="readonly",
-                                     width=16, values=["borders"])
-        self.layer_cb.grid(row=1, column=1, sticky="ew", padx=6)
-        self.layer_cb.bind("<<ComboboxSelected>>", lambda e: self.paint_view.refresh())
+        ttk.Label(vc, text="Overlay: borders.png (always)").grid(
+            row=1, column=0, columnspan=2, sticky="w", padx=6, pady=(2, 0))
         ttk.Separator(vc, orient="horizontal").grid(row=2, column=0, columnspan=2,
                                                     sticky="ew", padx=6, pady=6)
 
@@ -802,17 +952,8 @@ class FlashpointApp:
 
     def _paint_layer_rgba(self):
         st = self.state
-        v = self.layer_var.get()
-        if v == "borders":
-            return core.render_borders_rgba(st, self.border_rgb)
-        for cd in st.color_data:
-            if cd["name"] == v:
-                ov = st.borders_overlay if st.borders_overlay is not None \
-                    else np.zeros((st.H, st.W, 4), dtype=np.float32)
-                return core.render_layer_png(cd["mask"],
-                                             np.array(cd["rgb"], dtype="uint8"),
-                                             st.W, st.H, self.bg_rgb, ov)
-        return None
+        # The paint overlay is always borders.png (the layer picker was removed).
+        return core.render_borders_rgba(st, self.border_rgb)
 
     def _paint_view_fn(self):
         cw, ch = self.paint_view.cw, self.paint_view.ch
@@ -833,7 +974,7 @@ class FlashpointApp:
         # The scaled+rotated layer is the expensive part (PIL resize + rotate).
         # Cache it by content/layer/scale/rot so dragging (position) and
         # opacity/blend changes are cheap re-composites, not re-transforms.
-        tkey = (self._epoch, self.layer_var.get(), round(scale, 4), round(rot, 3))
+        tkey = (self._epoch, "borders", round(scale, 4), round(rot, 3))
         cached = self._paint_transform_cache
         if cached is None or cached[0] != tkey:
             rgb = layer[:, :, :3]
@@ -891,35 +1032,37 @@ class _ColorEditDialog(tk.Toplevel):
 
     Layout: a big square (Hue across X, Saturation up Y) + a single Lightness
     slider + live preview. Changes apply to the poster immediately (live), so
-    there is no OK/Cancel — close when done.
+    there is no OK/Cancel — close when done. Dark theme to match the app.
     """
 
     SQ = 220  # square side in px
+    BG = "#262626"
 
     def __init__(self, master, app, name, rgb, apply_cb):
         super().__init__(master)
         self.app = app
         self.title(f"Adjust color — {name}")
         self.resizable(False, False)
-        self.configure(padx=10, pady=10, bg="white")
+        self.configure(padx=10, pady=10, bg=self.BG)
         self.apply_cb = apply_cb
         h, s, l = rgb_to_hsl(rgb)
         self.h = h % 1.0
         self.s = s
         self.l = l
 
-        top = tk.Frame(self, bg="white"); top.pack(fill="x")
+        top = tk.Frame(self, bg=self.BG); top.pack(fill="x")
         self.canvas = tk.Canvas(top, width=self.SQ, height=self.SQ,
                                 highlightthickness=1, highlightbackground="#555")
         self.canvas.pack(side="left")
         self.canvas.bind("<ButtonPress-1>", self._sq)
         self.canvas.bind("<B1-Motion>", self._sq)
 
-        side = tk.Frame(self, bg="white"); side.pack(side="left", padx=(10, 0))
+        side = tk.Frame(self, bg=self.BG); side.pack(side="left", padx=(10, 0))
         self.prev = tk.Canvas(side, width=72, height=72, highlightthickness=1,
-                              highlightbackground="#555", bg="white")
+                              highlightbackground="#555", bg=self.BG)
         self.prev.pack(pady=(0, 6))
-        self.hexlbl = tk.Label(side, text="", bg="white", font=("TkFixedFont", 10))
+        self.hexlbl = tk.Label(side, text="", bg=self.BG, fg="#e6e6e6",
+                               font=("TkFixedFont", 10))
         self.hexlbl.pack(pady=(0, 10))
         ttk.Label(side, text="Lightness").pack(anchor="w")
         self.lscale = ttk.Scale(side, orient="vertical", length=self.SQ - 40,
@@ -963,22 +1106,15 @@ class _ColorEditDialog(tk.Toplevel):
         self.apply_cb(self._rgb())
 
     def _draw_square(self):
+        # hue(X) × saturation(Y) field at the current lightness, computed in a
+        # single numpy pass (no per-pixel Python loop) so lightness drags stay
+        # responsive even while the preview re-composites behind the dialog.
         N = self.SQ
-        # square shows the hue(X) × saturation(Y) field at the current lightness
         xs = np.linspace(0.0, 1.0, N)
         ys = np.linspace(1.0, 0.0, N)  # row 0 = top = s=1
         Hg, Sg = np.meshgrid(xs, ys)
-        step = 4
-        rch = np.zeros((N, N), dtype="uint8")
-        gch = np.zeros((N, N), dtype="uint8")
-        bch = np.zeros((N, N), dtype="uint8")
-        for i in range(0, N, step):
-            for j in range(0, N, step):
-                rr, gg, bb = hsl_to_rgb(float(Hg[i, j]), float(Sg[i, j]), self.l)
-                rch[i:i + step, j:j + step] = rr
-                gch[i:i + step, j:j + step] = gg
-                bch[i:i + step, j:j + step] = bb
-        arr = np.dstack([rch, gch, bch])
+        Lg = np.full((N, N), self.l, dtype=np.float64)
+        arr = _hsl_to_rgb_vec(Hg, Sg, Lg)
         if self.img is None:
             self.img = tk.PhotoImage(width=N, height=N)
         self.img.put(_hex_rows(arr))
