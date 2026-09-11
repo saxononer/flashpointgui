@@ -343,7 +343,7 @@ class FlashpointApp:
         root.geometry("1200x860")
         root.minsize(920, 660)
         try:
-            ttk.Style().theme_use("clam")
+            ttk.Style().theme_use("alt")
         except tk.TclError:
             pass
 
@@ -858,21 +858,35 @@ class FlashpointApp:
         return res
 
     def prep_save(self):
+        """Save the MASTER at full native resolution (not the downsized preview).
+
+        Plain master, or master + border overlay when the 'Overlay borders'
+        toggle is on (Saxon). The old code rendered the current view then
+        _fit()ed it to 900×900, so it saved a preview-sized image — you had to
+        'Save All Layers' to get the real master.
+        """
         if self.state is None:
             self._status("Nothing to save — run Quantize first.")
             return
-        cw, ch = 900, 900
-        base = self._prep_base_rgba()
-        fit, _ = _fit(base, cw, ch)
-        fname = self.view_var.get().replace("/", "_") + ".png"
-        path = filedialog.asksaveasfilename(title="Save view",
+        st = self.state
+        if self.border_toggle.get():
+            base = core.master_with_borders(st, self.border_rgb)
+        else:
+            base = core.render_master(st, st.palette_rgb)
+        base = np.asarray(base)
+        if base.ndim == 3 and base.shape[2] == 3:
+            a = np.full(base.shape[:2], 255, dtype="uint8")
+            base = np.dstack([base, a])
+        base = base.astype("uint8")
+        fname = ("master_borders" if self.border_toggle.get() else "master") + ".png"
+        path = filedialog.asksaveasfilename(title="Save master (full resolution)",
                                             defaultextension=".png",
                                             initialfile=fname,
                                             filetypes=[("PNG", "*.png")])
         if path:
             try:
-                Image.fromarray(fit, mode="RGBA").save(path)
-                self._status(f"Saved → {path}")
+                Image.fromarray(base, mode="RGBA").save(path)
+                self._status(f"Saved {base.shape[1]}×{base.shape[0]} → {path}")
             except Exception as e:
                 self._status(f"Save failed: {e}")
 
@@ -1221,6 +1235,28 @@ class FlashpointApp:
 
     def _paint_view_fn(self):
         cw, ch = self.paint_view.cw, self.paint_view.ch
+        # Keep the value read-outs in sync (live view only — the full-res save
+        # goes straight through _paint_compose and doesn't touch the widgets).
+        adj = (float(self.paint_hue.get()), float(self.paint_sat.get()),
+               float(self.paint_light.get()), float(self.paint_contrast.get()))
+        self.paint_scale_lbl.config(text=f"{float(self.paint_scale.get()):.2f}×")
+        self.paint_rot_lbl.config(text=f"{float(self.paint_rot.get()):.0f}°")
+        self.paint_op_lbl.config(text=f"{float(self.paint_opacity.get()):.2f}")
+        self.paint_hue_lbl.config(text=f"{adj[0]:.2f}")
+        self.paint_sat_lbl.config(text=f"{adj[1]:.2f}")
+        self.paint_light_lbl.config(text=f"{adj[2]:.2f}")
+        self.paint_contrast_lbl.config(text=f"{adj[3]:.2f}")
+        return self._paint_compose(
+            cw, ch, self.paint_cx, self.paint_cy,
+            self.paint_view.zoom,
+            int(self.paint_view.panx), int(self.paint_view.pany))
+
+    def _paint_compose(self, cw, ch, cx, cy, zoom, panx, pany):
+        """The paint composite as a pure function of view parameters, so the
+        live preview and the full-resolution save render identically — only
+        the target size/position/zoom/pan differ. The live view passes the
+        canvas's current values; paint_fullres passes the photo's native size
+        (option 2: rectangular, photo fills the frame, no letterbox)."""
         bg = self._bg_fitted(cw, ch).astype("float32") / 255.0
         if self.state is None:
             return (bg * 255).clip(0, 255).astype("uint8")
@@ -1231,20 +1267,16 @@ class FlashpointApp:
         blend = self.blend_var.get()
         adj = (float(self.paint_hue.get()), float(self.paint_sat.get()),
                float(self.paint_light.get()), float(self.paint_contrast.get()))
-        self.paint_scale_lbl.config(text=f"{scale:.2f}×")
-        self.paint_rot_lbl.config(text=f"{rot:.0f}°")
-        self.paint_op_lbl.config(text=f"{opacity:.2f}")
-        self.paint_hue_lbl.config(text=f"{adj[0]:.2f}")
-        self.paint_sat_lbl.config(text=f"{adj[1]:.2f}")
-        self.paint_light_lbl.config(text=f"{adj[2]:.2f}")
-        self.paint_contrast_lbl.config(text=f"{adj[3]:.2f}")
         if layer is None:
             return (bg * 255).clip(0, 255).astype("uint8")
 
         # The scaled+rotated layer is the expensive part (PIL resize + rotate).
-        # Cache it by content/layer/scale/rot so dragging (position) and
-        # opacity/blend changes are cheap re-composites, not re-transforms.
-        tkey = (self._epoch, "borders", round(scale, 4), round(rot, 3))
+        # Cache it by content/layer/scale/rot AND the reference edge it is
+        # scaled against (base = min(cw,ch)) — the transform size depends on the
+        # canvas, so a different-size composite (the full-res save) must NOT
+        # reuse a transform built for the preview.
+        tkey = (self._epoch, "borders", round(scale, 4), round(rot, 3),
+                min(cw, ch))
         cached = self._paint_transform_cache
         if cached is None or cached[0] != tkey:
             rgb = layer[:, :, :3]
@@ -1267,7 +1299,7 @@ class FlashpointApp:
         _, zrgb, zalpha = cached
 
         zh, zw = zrgb.shape[:2]
-        x0, y0 = int(self.paint_cx - zw / 2), int(self.paint_cy - zh / 2)
+        x0, y0 = int(cx - zw / 2), int(cy - zh / 2)
         sx0, sy0 = max(0, x0), max(0, y0)
         ex, ey = min(cw, x0 + zw), min(ch, y0 + zh)
         # Color adjust (hue/sat/light/contrast) applies ONLY to the background
@@ -1289,15 +1321,13 @@ class FlashpointApp:
         # Zoom/pan were previously ignored here — the wheel updated
         # paint_view.zoom but _paint_view_fn never read it, so zooming was a
         # no-op.
-        z = self.paint_view.zoom
-        if z != 1.0:
+        if zoom != 1.0:
             w, h = cw, ch
-            zw = max(1, int(w * z)); zh2 = max(1, int(h * z))
-            zoomed = _resize((out * 255).clip(0, 255).astype("uint8"), zw, zh2)
+            zw2 = max(1, int(w * zoom)); zh2 = max(1, int(h * zoom))
+            zoomed = _resize((out * 255).clip(0, 255).astype("uint8"), zw2, zh2)
             out, _ = _fit(zoomed, cw, ch)
             out = out.astype("float32") / 255.0
         # Pan (view-level, applied after zoom)
-        panx, pany = int(self.paint_view.panx), int(self.paint_view.pany)
         if panx or pany:
             res = np.zeros((ch, cw, 3), dtype="uint8")
             d0 = max(0, panx); d1 = min(cw, cw + panx)
@@ -1309,18 +1339,47 @@ class FlashpointApp:
             return res
         return (out * 255).clip(0, 255).astype("uint8")
 
+    def paint_fullres(self):
+        """Full-resolution paint composite: border over the (adjusted) wall
+        photo, at the photo's OWN dimensions (option 2 — rectangular, no
+        letterbox). The live preview renders on a square, letterboxed canvas,
+        so this maps the same scale/position/adjust onto the unletterboxed
+        photo: the border scale follows the photo's short edge (the same
+        reference the preview uses), the drag position maps by fractional
+        offset (a non-centered drag is approximate), and zoom/pan are dropped
+        since this is a full-res render, not a view.
+        """
+        if self.state is None:
+            self._status("Run Quantize in the Prep tab first.")
+            return
+        if self._bg is None:
+            self._status("Upload a background wall photo first.")
+            return
+        bH, bW = self._bg.shape[:2]
+        # Map the border center from the preview's fractional position onto
+        # the full-res canvas. paint_reset() leaves the center at the preview
+        # center (cx/cy = 0.5 fraction) -> this lands at the photo center.
+        pcw, pch = self.paint_view.cw, self.paint_view.ch
+        fcx = (self.paint_cx / pcw) if pcw else 0.5
+        fcy = (self.paint_cy / pch) if pch else 0.5
+        return self._paint_compose(bW, bH, fcx * bW, fcy * bH, 1.0, 0, 0)
+
     def paint_save(self):
         if self.state is None:
             self._status("Run Quantize in the Prep tab first.")
             return
-        path = filedialog.asksaveasfilename(title="Save composition",
+        path = filedialog.asksaveasfilename(title="Save full-resolution composite",
                                             defaultextension=".png",
                                             initialfile="paint.png",
                                             filetypes=[("PNG", "*.png")])
         if path:
             try:
-                Image.fromarray(self._paint_view_fn()).save(path)
-                self._status(f"Saved → {path}")
+                # Render at native resolution; never reuse a live cache entry
+                # keyed to the preview canvas.
+                self._paint_transform_cache = None
+                frame = self.paint_fullres()
+                Image.fromarray(frame).save(path)
+                self._status(f"Saved {frame.shape[1]}×{frame.shape[0]} → {path}")
             except Exception as e:
                 self._status(f"Save failed: {e}")
 

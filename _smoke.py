@@ -446,6 +446,64 @@ if "img" in _seen:
           d.max() <= 1e-6, f"(max delta vs bg-only={d.max():.2e})")
 app.paint_reset()
 
+print("== 17. save fixes: prep full-res master / paint full-res composite / alt theme ==")
+st = app.state
+stW, stH = st.W, st.H
+
+# (a) Prep "Save" writes the MASTER at native resolution (not a 900x900 preview),
+#     plain master by default, +border overlay only when the toggle is on.
+app.view_var.set("master"); app.border_toggle.set(False)
+g.filedialog.asksaveasfilename = lambda **k: "/tmp/fp_smoke_master.png"
+app.prep_save()
+mp = core.Image.open("/tmp/fp_smoke_master.png")
+marr = np.asarray(mp)
+check("prep save is full native resolution (was 900x900 preview)",
+      marr.shape[:2] == (stH, stW), f"(shape={marr.shape}, native=({stH},{stW}))")
+check("prep save (plain) == core.render_master",
+      np.array_equal(marr[..., :3], np.asarray(core.render_master(st, st.palette_rgb))))
+app.border_toggle.set(True); app.border_rgb = (255, 0, 255)
+g.filedialog.asksaveasfilename = lambda **k: "/tmp/fp_smoke_masterb.png"
+app.prep_save()
+mbarr = np.asarray(core.Image.open("/tmp/fp_smoke_masterb.png"))
+check("prep save (borders ticked) overlays the border lines",
+      not np.array_equal(mbarr[..., :3],
+                         np.asarray(core.render_master(st, st.palette_rgb))))
+check("prep save (borders ticked) == core.master_with_borders",
+      np.array_equal(mbarr[..., :3],
+                     np.asarray(core.master_with_borders(st, (255, 0, 255)))))
+app.border_toggle.set(False)
+
+# (b) Paint "Save" writes the composite at the WALL PHOTO's own dimensions
+#     (option 2: rectangular, photo fills the frame, no letterbox). Use a
+#     NON-square photo so the letterbox path is unambiguous.
+bH, bW = 200, 320
+non_sq = np.dstack([np.full((bH, bW, 1), 190, "uint8"),
+                    np.full((bH, bW, 1), 120, "uint8"),
+                    np.full((bH, bW, 1), 70, "uint8")])
+app._bg = non_sq
+app.border_rgb = (255, 0, 0)   # red borders -> the overlay check below is unambiguous
+app._epoch += 1                 # invalidate the (magenta-keyed) transform cache
+app.paint_view.cw, app.paint_view.ch = 200, 200
+app.paint_reset()
+app.paint_hue.set(0.3); app.paint_scale.set("1.2")   # non-default adjust + scale
+g.filedialog.asksaveasfilename = lambda **k: "/tmp/fp_smoke_paint.png"
+app.paint_save()
+pf = np.asarray(core.Image.open("/tmp/fp_smoke_paint.png"))
+check("paint save is the photo's native size (no letterbox)",
+      pf.shape == (bH, bW, 3), f"(shape={pf.shape}, native=({bH},{bW},3))")
+# The saved frame must differ from the RAW photo — proving the background hue
+# adjust AND the border composite were applied (a raw-photo passthrough would
+# be identical to non_sq).
+check("paint save is not a raw-photo passthrough (adjust+composite applied)",
+      not np.array_equal(pf, non_sq))
+check("paint save contains the border overlay (some border-red pixels)",
+      bool(((pf[..., 0] > 200) & (pf[..., 1] < 90) & (pf[..., 2] < 90)).any()))
+app.paint_reset()
+
+# (c) The toolkit uses the 'alt' ttk theme (available on this Tk build).
+check("toolkit uses the 'alt' ttk theme",
+      ttk.Style().theme_use() == "alt", f"(={ttk.Style().theme_use()!r})")
+
 print(f"\nRESULT: {ok} passed, {fail} failed")
 root.destroy()
 sys.exit(1 if fail else 0)
