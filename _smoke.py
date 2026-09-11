@@ -348,6 +348,56 @@ check("dropdown values contain the new hex name",
       core.rgb_to_hex(newrgb) in list(app.view_cb.cget("values")))
 app._edit_cid = None
 
+print("== 15. preview push (ImageTk C-path) displays the correct frame ==")
+# The preview now pushes via ImageTk.PhotoImage (C path) instead of building a
+# per-pixel hex string + PhotoImage.put(). Capture the exact image hand-off and
+# confirm it equals an independently-composed reference frame.
+import flashpoint_gui as _g
+_pcap = {}
+_porig = _g.ImageTk.PhotoImage
+def _pcap_ph(*_a, **_k):
+    if _a:
+        _pcap["img"] = np.asarray(_a[0]).copy()
+    return _porig(*_a, **_k)
+_g.ImageTk.PhotoImage = _pcap_ph
+
+def _ref_frame(viewname, border):
+    app.view_var.set(viewname)
+    app.border_rgb = border
+    arr = np.asarray(app._prep_view_fn())
+    if arr.shape[2] == 4:
+        bg = np.zeros((arr.shape[0], arr.shape[1], 3), dtype="uint8")
+        a = arr[:, :, 3:4].astype("float32") / 255.0
+        arr = (arr[:, :, :3].astype("float32") * a + bg * (1 - a)).clip(0, 255).astype("uint8")
+    return arr
+
+def _dsum(a, b):
+    return int(np.abs(np.asarray(a).astype(int) - np.asarray(b).astype(int)).sum())
+
+pv = app.prep_view
+_pv_w, _pv_h = 120, 90
+pv.cw, pv.ch = _pv_w, _pv_h
+pv.zoom, pv.panx, pv.pany = 1.0, 0.0, 0.0
+
+app.view_var.set("master")
+app.border_rgb = (255, 0, 0)
+app._epoch += 1; app._prep_zoom_cache = None
+_pcap.clear(); pv.refresh(); root.update()
+disp = _pcap.get("img")
+check("preview frame captured via ImageTk path", disp is not None and disp.shape[:2] == (_pv_h, _pv_w),
+      f"(shape={None if disp is None else disp.shape})")
+if disp is not None:
+    check("preview (master) == independently-composed reference",
+          _dsum(disp, _ref_frame("master", (255, 0, 0))) == 0)
+    app.view_var.set("borders")
+    app.border_rgb = (0, 0, 255)
+    app._epoch += 1; app._prep_zoom_cache = None
+    _pcap.clear(); pv.refresh(); root.update()
+    db = _pcap.get("img")
+    check("preview (borders, recolored) == reference",
+          db is not None and _dsum(db, _ref_frame("borders", (0, 0, 255))) == 0)
+_g.ImageTk.PhotoImage = _porig
+
 print(f"\nRESULT: {ok} passed, {fail} failed")
 root.destroy()
 sys.exit(1 if fail else 0)
