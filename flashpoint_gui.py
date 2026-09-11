@@ -11,8 +11,9 @@ Two workspaces (a Notebook):
           - a border-overlay toggle for judging complexity
           - [Save] writes the currently-viewed image to a file
           - a strip of the colors actually USED in the poster (can count each,
-            derived from the mural size + can-coverage); click one -> an HSL
-            editor nudges it and the preview updates live (the pipeline is
+            derived from the mural size + can-coverage); click one -> the
+            standard tkinter colour chooser (tkinter.colorchooser.askcolor)
+            re-tints it and the preview updates live (the pipeline is
             cached, only the render re-runs).
 
   PAINT   Position the result over a wall photo.
@@ -31,7 +32,7 @@ Run:  python flashpoint_gui.py [image.png] [palette.txt]
 """
 
 import tkinter as tk
-from tkinter import ttk, filedialog
+from tkinter import ttk, filedialog, colorchooser
 from PIL import Image, ImageTk
 import numpy as np
 import os
@@ -412,12 +413,14 @@ class FlashpointApp:
     # ---- color pickers (border / background) ----
     def _add_color_control(self, parent, name, get_rgb, set_rgb):
         """A clickable swatch + hex label that opens the on-theme HSL color
-        editor (same dialog as the poster-color strip) and applies changes
-        live via set_rgb. get_rgb supplies the CURRENT color when reopening.
+        editor and applies changes live via set_rgb. get_rgb supplies the
+        CURRENT color when reopening.
 
-        The old path used tk.colorchooser.askcolor, which is flaky on this Tk
-        9.0 / Wayland build (often opens nothing) and is off-theme anyway; the
-        shared in-app editor sidesteps both.
+        Note: the POSTER colour strip (the swatches in the prep view) uses the
+        standard tkinter colour chooser (colorchooser.askcolor) per Saxon's
+        request. These border/background controls keep the in-app HSL editor —
+        that one was built earlier when the standard askcolor proved flaky on
+        this Tk 9.0 / Wayland build (often opened nothing) and is on-theme.
         """
         hexc = core.rgb_to_hex(get_rgb())
         box = ttk.Frame(parent); box.pack(side="left", padx=8)
@@ -1026,20 +1029,28 @@ class FlashpointApp:
         cv.config(scrollregion=(0, 0, x + 8, 72))
 
     def _swatch_click(self, ci):
+        """Click a poster colour swatch -> the standard tkinter colour chooser.
+
+        tk.colorchooser.askcolor is the built-in dialog; it returns
+        ((r, g, b), hex) on OK or (None, None) on cancel. The chosen colour is
+        fed to _apply_color, which does the real work (rename the swatch to the
+        hex, swap the palette entry, invalidate caches, live preview refresh).
+        Cancellation is a no-op. (Replaces the in-app HSL editor here on
+        Saxon's request; the border/background controls still use that dialog.)
+        """
         st = self.state
         cd = next(c for c in st.color_data if c["ci"] == ci)
         self._edit_cid = ci
         self._draw_swatch()
-        if self._color_edit_dialog is not None:
-            try:
-                if self._color_edit_dialog.winfo_exists():
-                    self._color_edit_dialog.destroy()
-            except Exception:
-                pass
-            self._color_edit_dialog = None
-        self._color_edit_dialog = _ColorEditDialog(
-            self.root, self, cd["name"], tuple(cd["rgb"]), self._apply_color)
-        self._status(f"Adjusting '{cd['name']}' — preview updates live.")
+        rgb, _hex = colorchooser.askcolor(
+            color=core.rgb_to_hex(cd["rgb"]),
+            parent=self.root,
+            title=f"Recolour '{cd['name']}'")
+        if rgb is None:
+            self._edit_cid = None
+            return  # cancelled — leave the colour untouched
+        self._apply_color(tuple(int(v) for v in rgb))
+        self._status(f"Recoloured '{cd['name']}'.")
 
     def _apply_color(self, rgb):
         """Live color edit callback from the picker (ci fixed while open)."""

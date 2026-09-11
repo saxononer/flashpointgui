@@ -541,6 +541,41 @@ app.paint_reset()
 check("toolkit uses the 'alt' ttk theme",
       ttk.Style().theme_use() == "alt", f"(={ttk.Style().theme_use()!r})")
 
+print("== 18. poster swatch click opens the standard tkinter colour chooser ==")
+# Saxon's request: clicking a poster colour swatch must now route through
+# colorchooser.askcolor (not the in-app HSL dialog). Monkeypatch askcolor and
+# confirm _swatch_click calls it with the CURRENT colour, parented to the app
+# window, that a pick flows into _apply_color, and that cancel is a no-op.
+import flashpoint_gui as _g18
+_orig_ask = _g18.colorchooser.askcolor
+try:
+    t18 = st.color_data[0]
+    _before_rgb = tuple(t18["rgb"])
+    _cap18 = {}
+    def _fake_ask(color=None, **opt):
+        _cap18.update({"color": color, "opt": opt}); return (None, None)
+    _g18.colorchooser.askcolor = _fake_ask
+    app._swatch_click(t18["ci"]); root.update()
+    check("swatch click calls colorchooser.askcolor",
+          "color" in _cap18, f"(initialcolor={_cap18.get('color')!r})")
+    check("askcolor pre-loaded with the CURRENT colour",
+          _cap18.get("color") == core.rgb_to_hex(_before_rgb),
+          f"(got={_cap18.get('color')!r} want={core.rgb_to_hex(_before_rgb)!r})")
+    check("askcolor is parented to the app window",
+          _cap18.get("opt", {}).get("parent") is app.root)
+    check("cancel (None,None) leaves the colour untouched",
+          tuple(t18["rgb"]) == _before_rgb, f"(rgb={tuple(t18['rgb'])})")
+    # now confirm a real pick recolors through the existing _apply_color path
+    _new = (11, 22, 33)
+    _g18.colorchooser.askcolor = lambda color=None, **opt: (_new, core.rgb_to_hex(_new))
+    app._swatch_click(t18["ci"]); root.update()
+    check("a pick recolors the layer (rgb updated via _apply_color)",
+          tuple(t18["rgb"]) == _new, f"(rgb={tuple(t18['rgb'])})")
+    check("a pick renames the swatch to the new hex",
+          t18["name"] == core.rgb_to_hex(_new), f"(name={t18['name']!r})")
+finally:
+    _g18.colorchooser.askcolor = _orig_ask
+
 print(f"\nRESULT: {ok} passed, {fail} failed")
 root.destroy()
 sys.exit(1 if fail else 0)
