@@ -31,6 +31,7 @@ import re
 import json
 import sys
 import time
+import base64
 from collections import Counter
 
 import numpy as np
@@ -619,7 +620,7 @@ STATS_HTML = """<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Paint coverage — __TITLE__</title>
+<title>flashpointgui - __TITLE__</title>
 <style>
   body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
          font-size: 14px; line-height: 1.5; color: #000; background: #fff;
@@ -643,7 +644,8 @@ STATS_HTML = """<!doctype html>
 </style>
 </head>
 <body>
-  <h1>Flashpoint - __TITLE__ — paint coverage</h1>
+  __LOGO__
+  <h1>flashpointgui - __TITLE__</h1>
   <div class="sub">__DIM__ &middot; __NCOLORS__ colors &middot; palette: __PALETTE__</div>
 
   <div class="controls">
@@ -715,6 +717,36 @@ render();
 """
 
 
+_LOGO_URI_CACHE = None
+
+
+def _logo_data_uri():
+    """Base64 data-URI of the flashpointgui logo (shipped alongside this file),
+    or '' if it's missing. Inlined so stats.html stays fully self-contained
+    (opens anywhere, no sidecar image)."""
+    global _LOGO_URI_CACHE
+    if _LOGO_URI_CACHE is None:
+        uri = ""
+        try:
+            p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "flashpointgui.png")
+            with open(p, "rb") as f:
+                uri = "data:image/png;base64," + base64.b64encode(f.read()).decode("ascii")
+        except Exception:
+            uri = ""
+        _LOGO_URI_CACHE = uri
+    return _LOGO_URI_CACHE
+
+
+def _logo_html():
+    """The <img> tag for the logo banner in stats.html, or '' if no logo."""
+    uri = _logo_data_uri()
+    if not uri:
+        return ""
+    return ('<img src="%s" alt="flashpointgui" width="56" height="56" '
+            'style="display:block;margin:0 0 12px;">' % uri)
+
+
 def write_stats_html(path, image_w, image_h, rows, title="poster", palette="unknown"):
     ar = (image_w / image_h) if image_h else 1.0
     data = [{"name": n, "hex": hx, "pct": float(p)} for (n, hx, p) in rows]
@@ -724,7 +756,8 @@ def write_stats_html(path, image_w, image_h, rows, title="poster", palette="unkn
             .replace("__NCOLORS__", str(len(data)))
             .replace("__PALETTE__", palette)
             .replace("__AR__", repr(round(ar, 8)))
-            .replace("__ROWS__", json.dumps(data)))
+            .replace("__ROWS__", json.dumps(data))
+            .replace("__LOGO__", _logo_html()))
     with open(path, "w", encoding="utf-8") as f:
         f.write(html)
     return path

@@ -339,13 +339,14 @@ class _Preview:
 class FlashpointApp:
     def __init__(self, root, image_path=None, palette_path=None):
         self.root = root
-        root.title("flashpoint — posterizer")
+        root.title("flashpointgui")
         root.geometry("1200x860")
         root.minsize(920, 660)
         try:
             ttk.Style().theme_use("alt")
         except tk.TclError:
             pass
+        self._set_window_icon()
 
         self.image_rgb = None
         self.image_path = None
@@ -388,6 +389,18 @@ class FlashpointApp:
             self._load_image(image_path)
         if palette_path:
             self._load_palette(palette_path)
+
+    def _set_window_icon(self):
+        """Load the flashpointgui logo (shipped alongside this file) and set it
+        as the window/taskbar icon. Fails silently if the PNG is missing."""
+        ico_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "flashpointgui.png")
+        try:
+            img = Image.open(ico_path)
+            self._ico_ref = ImageTk.PhotoImage(img)   # keep a live reference
+            self.root.iconphoto(True, self._ico_ref)
+        except Exception:
+            pass
 
     def _status(self, text):
         self.status.config(text=text)
@@ -858,35 +871,26 @@ class FlashpointApp:
         return res
 
     def prep_save(self):
-        """Save the MASTER at full native resolution (not the downsized preview).
-
-        Plain master, or master + border overlay when the 'Overlay borders'
-        toggle is on (Saxon). The old code rendered the current view then
-        _fit()ed it to 900×900, so it saved a preview-sized image — you had to
-        'Save All Layers' to get the real master.
-        """
+        """Save the CURRENT PREVIEW at full native resolution — whatever is
+        selected in the view dropdown: the master, the borders, or a specific
+        colour layer (e.g. 'chocolate brown'). Same pixels the preview shows,
+        just at full res (not the zoomed/letterboxed preview frame)."""
         if self.state is None:
             self._status("Nothing to save — run Quantize first.")
             return
-        st = self.state
-        if self.border_toggle.get():
-            base = core.master_with_borders(st, self.border_rgb)
-        else:
-            base = core.render_master(st, st.palette_rgb)
-        base = np.asarray(base)
-        if base.ndim == 3 and base.shape[2] == 3:
-            a = np.full(base.shape[:2], 255, dtype="uint8")
-            base = np.dstack([base, a])
-        base = base.astype("uint8")
-        fname = ("master_borders" if self.border_toggle.get() else "master") + ".png"
-        path = filedialog.asksaveasfilename(title="Save master (full resolution)",
+        base = self._prep_base_rgba()
+        v = self.view_var.get()
+        safe = "".join(c if (c.isalnum() or c in "-_") else "_"
+                       for c in v)[:60] or "view"
+        fname = f"{safe}.png"
+        path = filedialog.asksaveasfilename(title="Save current view (full resolution)",
                                             defaultextension=".png",
                                             initialfile=fname,
                                             filetypes=[("PNG", "*.png")])
         if path:
             try:
                 Image.fromarray(base, mode="RGBA").save(path)
-                self._status(f"Saved {base.shape[1]}×{base.shape[0]} → {path}")
+                self._status(f"Saved '{v}' {base.shape[1]}×{base.shape[0]} → {path}")
             except Exception as e:
                 self._status(f"Save failed: {e}")
 

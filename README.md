@@ -1,4 +1,6 @@
-# flashpointv3
+# flashpointgui
+
+[github.com/saxononer/flashpointgui](https://github.com/saxononer/flashpointgui)
 
 Linux Python GUI for posterizing an image into a limited, named palette and
 tracing its color boundaries into clean, simplified SVG polylines (and PNG

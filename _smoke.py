@@ -63,6 +63,12 @@ print("== 0. quantize is threaded (state produced) ==")
 check("top-level quantize produced a state", st is not None,
       f"(running={app._quant_running})")
 
+print("== 0b. window title + icon ==")
+check("window title is 'flashpointgui'", app.root.title() == "flashpointgui",
+      f"(title={app.root.title()!r})")
+check("window icon loaded (flashpointgui.png)",
+      getattr(app, "_ico_ref", None) is not None)
+
 print("== 1. spinboxes keyboard-editable (no readonly) ==")
 def all_spinboxes():
     out = []
@@ -236,6 +242,15 @@ check("layers/ folder has one PNG per colour",
       f"({0 if not os.path.isdir(layers_dir) else len(os.listdir(layers_dir))} "
       f"png / {len(st.color_data)} colours)")
 check("stats.html written", any(f.endswith(".html") for f in files))
+if any(f.endswith(".html") for f in files):
+    sph = os.path.join(outdir, "stats.html")
+    sh = open(sph).read()
+    check("stats.html embeds the logo (base64 data-URI)",
+          "data:image/png;base64," in sh,
+          f"(logo present={('data:image/png' in sh)})")
+    check("stats.html title uses 'flashpointgui' (no 'paint coverage')",
+          "flashpointgui" in sh and "paint coverage" not in sh,
+          f"(flashpointgui={'flashpointgui' in sh} coverage={'paint coverage' in sh})")
 app._status = orig_status
 
 print("== 11. Save Paint List -> HTML table (name, colour example, cans) ==")
@@ -472,6 +487,28 @@ check("prep save (borders ticked) == core.master_with_borders",
       np.array_equal(mbarr[..., :3],
                      np.asarray(core.master_with_borders(st, (255, 0, 255)))))
 app.border_toggle.set(False)
+
+# (c) Prep "Save" of a SPECIFIC layer view saves THAT layer at full res (Saxon:
+#     "if the user is showing chocolate brown, save the chocolate brown layer").
+pick = st.color_data[0]["name"]
+app.view_var.set(pick); app.border_toggle.set(False)
+_cap = {}
+g.filedialog.asksaveasfilename = lambda **k: (_cap.update(k), "/tmp/fp_smoke_layer.png")[1]
+app.prep_save()
+larr = np.asarray(core.Image.open("/tmp/fp_smoke_layer.png"))
+ref = app._prep_base_rgba()
+check("prep save (specific layer) is full native resolution",
+      larr.shape[:2] == (stH, stW), f"(shape={larr.shape}, native=({stH},{stW}))")
+check("prep save (specific layer) == the current view (_prep_base_rgba)",
+      np.array_equal(larr, np.asarray(ref).astype("uint8")))
+check("prep save (specific layer) is NOT the master (it's a real layer)",
+      not np.array_equal(larr[..., :3],
+                         np.asarray(core.render_master(st, st.palette_rgb))))
+safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in pick)[:60] or "view"
+check("prep save (specific layer) offers a colour-named default filename",
+      _cap.get("initialfile") == safe + ".png",
+      f"(initialfile={_cap.get('initialfile')!r} want={safe + '.png'!r})")
+app.view_var.set("master")
 
 # (b) Paint "Save" writes the composite at the WALL PHOTO's own dimensions
 #     (option 2: rectangular, photo fills the frame, no letterbox). Use a
