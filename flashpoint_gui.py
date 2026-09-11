@@ -395,13 +395,68 @@ class FlashpointApp:
         """Load the flashpointgui logo (shipped alongside this file) and set it
         as the window/taskbar icon. Fails silently if the PNG is missing."""
         ico_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "flashpointgui.png")
+                                 "flashpointgui.png")
         try:
             img = Image.open(ico_path)
-            self._ico_ref = ImageTk.PhotoImage(img)   # keep a live reference
+            self._ico_ref = ImageTk.PhotoImage(img, master=self.root)  # keep a live reference
             self.root.iconphoto(True, self._ico_ref)
         except Exception:
             pass
+
+    def _logo_photo(self, size):
+        """Resize the flashpointgui logo to a square PhotoImage of `size` px.
+        Returns (photo, pil_base) — the caller MUST retain both refs so the
+        PhotoImage isn't garbage-collected mid-display."""
+        p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "flashpointgui.png")
+        try:
+            base = Image.open(p).convert("RGBA")
+            base = base.resize((size, size), Image.LANCZOS)
+            return ImageTk.PhotoImage(base), base
+        except Exception:
+            return None, None
+
+    def _about_btn_size(self, e):
+        """Keep the About button a perfect square (width == current height) and
+        redraw the logo centred whenever the Input box resizes."""
+        h = max(4, e.height)
+        self._about_btn.configure(width=h)
+        self._about_btn.delete("about")
+        m = max(4, int(h * 0.07))            # margin so the logo isn't flush
+        size = h - 2 * m
+        self._about_btn.create_rectangle(1, 1, h - 2, h - 2, outline="#5a5a5a",
+                                         width=1, tags="about")
+        if size < 8:
+            return
+        photo, base = self._logo_photo(size)
+        if photo is None:
+            return
+        self._about_logo = (photo, base)      # keep both refs alive
+        self._about_btn.create_image(m, m, image=photo, anchor="nw", tags="about")
+
+    def _show_about(self, _=None):
+        """Open the About window (opened by the floating logo button)."""
+        win = tk.Toplevel(self.root)
+        win.title("About flashpointgui")
+        win.configure(bg="#1a1a1a")
+        win.resizable(False, False)
+        win.transient(self.root)
+        try:
+            win.iconphoto(True, self._ico_ref)
+        except Exception:
+            pass
+        win.update_idletasks()
+        photo, base = self._logo_photo(96)
+        if photo is not None:
+            self._about_win_logo = (photo, base)
+            tk.Label(win, image=photo, bg="#1a1a1a").pack(pady=(16, 8))
+        txt = ("flashpointgui v1\n"
+               "made by Saxon and Hypatia\n"
+               "[Qwen 3.8 · Hermes]")
+        tk.Label(win, text=txt, justify="center", bg="#1a1a1a", fg="#e8e8e8",
+                 font=("TkDefaultFont", 10), padx=24).pack(pady=(0, 12))
+        ttk.Button(win, text="Close", command=win.destroy).pack(pady=(0, 12))
+        win.grab_set()
 
     def _status(self, text):
         self.status.config(text=text)
@@ -412,15 +467,12 @@ class FlashpointApp:
 
     # ---- color pickers (border / background) ----
     def _add_color_control(self, parent, name, get_rgb, set_rgb):
-        """A clickable swatch + hex label that opens the on-theme HSL color
-        editor and applies changes live via set_rgb. get_rgb supplies the
-        CURRENT color when reopening.
+        """A clickable swatch + hex label that opens the standard tkinter colour
+        chooser (colorchooser.askcolor) and applies the pick live via set_rgb.
+        get_rgb supplies the CURRENT color when reopening.
 
-        Note: the POSTER colour strip (the swatches in the prep view) uses the
-        standard tkinter colour chooser (colorchooser.askcolor) per Saxon's
-        request. These border/background controls keep the in-app HSL editor —
-        that one was built earlier when the standard askcolor proved flaky on
-        this Tk 9.0 / Wayland build (often opened nothing) and is on-theme.
+        Used for the border + background controls (the same chooser as the
+        poster colour strip, per Saxon's request — one consistent picker).
         """
         hexc = core.rgb_to_hex(get_rgb())
         box = ttk.Frame(parent); box.pack(side="left", padx=8)
@@ -431,22 +483,17 @@ class FlashpointApp:
         lbl.pack(side="left")
 
         def open_picker(_=None):
-            if self._color_edit_dialog is not None:
-                try:
-                    if self._color_edit_dialog.winfo_exists():
-                        self._color_edit_dialog.destroy()
-                except Exception:
-                    pass
-                self._color_edit_dialog = None
-
-            def apply(rgb):
-                h = core.rgb_to_hex(rgb)
-                sw.itemconfig(rect, fill=h)
-                lbl.config(text=h)
-                set_rgb(rgb)
-
-            self._color_edit_dialog = _ColorEditDialog(
-                self.root, self, name, tuple(get_rgb()), apply)
+            rgb, _hex = colorchooser.askcolor(
+                color=core.rgb_to_hex(get_rgb()),
+                parent=self.root,
+                title=f"Choose {name} colour")
+            if rgb is None:
+                return  # cancelled — leave the colour untouched
+            rgb = tuple(int(v) for v in rgb)
+            h = core.rgb_to_hex(rgb)
+            sw.itemconfig(rect, fill=h)
+            lbl.config(text=h)
+            set_rgb(rgb)
 
         sw.bind("<Button-1>", open_picker)
         lbl.bind("<Button-1>", open_picker)
@@ -528,6 +575,17 @@ class FlashpointApp:
         ttk.Label(r3, text="Background:").pack(side="left", padx=(20, 0))
         self._add_color_control(r3, "Background", lambda: self.bg_rgb, self._set_bg_rgb)
 
+        # Floating logo / About button (Saxon): a square that fills 100% of the
+        # Input box's height, docked to its right edge. Clicking it opens the
+        # About window. `place`d (not packed) so it overlays rather than pushing
+        # the input rows around; it is square via a <Configure> size-handler.
+        self._about_btn = tk.Canvas(inp, highlightthickness=0, bg="#1a1a1a",
+                                    cursor="hand2")
+        self._about_btn.place(relx=1.0, y=0, relheight=1.0, anchor="ne", x=-2)
+        self._about_btn.bind("<Configure>", self._about_btn_size)
+        self._about_btn.bind("<Button-1>", self._show_about)
+        self._about_logo = None       # (PhotoImage, PIL) ref, kept alive
+
         body = ttk.Frame(p)
         body.pack(fill="both", expand=True, padx=6, pady=2)
         self.prep_canvas = tk.Canvas(body, bg="#1a1a1a", highlightthickness=0)
@@ -570,7 +628,7 @@ class FlashpointApp:
         ttk.Button(vc, text="Save Paint List…", command=self.prep_save_paint_list).grid(
             row=10, column=0, columnspan=2, pady=(2, 8), sticky="ew", padx=6)
 
-        strip = ttk.LabelFrame(p, text="Colors in poster (click a color to adjust)")
+        strip = ttk.LabelFrame(p, text="Colors")
         strip.pack(fill="x", padx=6, pady=(2, 2))
         self.swatch_canvas = tk.Canvas(strip, height=72, highlightthickness=0)
         self.swatch_sb = ttk.Scrollbar(strip, orient="horizontal",
@@ -1105,7 +1163,7 @@ class FlashpointApp:
         ttk.Button(vc, text="Upload background…",
                    command=self.paint_pick_bg).grid(
             row=0, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 2))
-        ttk.Label(vc, text="Overlay: borders.png (always)").grid(
+        ttk.Label(vc, text="Overlay: borders.png").grid(
             row=1, column=0, columnspan=2, sticky="w", padx=6, pady=(2, 0))
         ttk.Separator(vc, orient="horizontal").grid(row=2, column=0, columnspan=2,
                                                     sticky="ew", padx=6, pady=6)
@@ -1401,6 +1459,11 @@ class FlashpointApp:
 
 class _ColorEditDialog(tk.Toplevel):
     """Photoshop-style color editor for a single poster color.
+
+    NOTE: currently UNUSED by the app — all three pickers (poster swatch,
+    border, background) now route through the standard tkinter
+    colorchooser.askcolor. This class is kept as the ready-made alternative
+    for the case Saxon swaps the RGB-slider chooser back to an HSL field.
 
     Layout: a big square (Hue across X, Saturation up Y) + a single Lightness
     slider + live preview. Changes apply to the poster immediately (live), so

@@ -35,7 +35,7 @@ python flashpoint.py --input photo.png --palette colors.txt --output out/
 `--min-area N` (region cleanup), `--border-color HEX`, `--bg-color HEX`.
 
 Outputs (mirrors the original): `master_<name>.png`, `borders_<name>.png`,
-`stats.html`, and `layers/<hex>_<name>.png` (one per color, transparent).
+`paintlist.html`, and `layers/<hex>_<name>.png` (one per color, transparent).
 
 ## GUI
 
@@ -53,7 +53,7 @@ python flashpoint_gui.py [image.png] [palette.txt]
   screen, overlay, soft-light, hard-light, color-dodge, color-burn, darken,
   lighten), set opacity, toggle "blend over photo". Exports the composite.
 - **Show borders** — overlay the traced region contours on the preview.
-- **Save all** — writes master / borders / stats.html / layers, same as the CLI.
+- **Save all** — writes master / borders / paintlist.html / layers, same as the CLI.
 
 ## The two-tier model
 

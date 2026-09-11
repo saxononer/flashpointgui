@@ -241,14 +241,14 @@ check("layers/ folder has one PNG per colour",
       == len(st.color_data),
       f"({0 if not os.path.isdir(layers_dir) else len(os.listdir(layers_dir))} "
       f"png / {len(st.color_data)} colours)")
-check("stats.html written", any(f.endswith(".html") for f in files))
+check("paintlist.html written", any(f.endswith(".html") for f in files))
 if any(f.endswith(".html") for f in files):
-    sph = os.path.join(outdir, "stats.html")
+    sph = os.path.join(outdir, "paintlist.html")
     sh = open(sph).read()
-    check("stats.html embeds the logo (base64 data-URI)",
+    check("paintlist.html embeds the logo (base64 data-URI)",
           "data:image/png;base64," in sh,
           f"(logo present={('data:image/png' in sh)})")
-    check("stats.html title uses 'flashpointgui' (no 'paint coverage')",
+    check("paintlist.html title uses 'flashpointgui' (no 'paint coverage')",
           "flashpointgui" in sh and "paint coverage" not in sh,
           f"(flashpointgui={'flashpointgui' in sh} coverage={'paint coverage' in sh})")
 app._status = orig_status
@@ -575,6 +575,137 @@ try:
           t18["name"] == core.rgb_to_hex(_new), f"(name={t18['name']!r})")
 finally:
     _g18.colorchooser.askcolor = _orig_ask
+
+print("== 19. about button, border/bg askcolor, label + filename renames ==")
+import flashpoint_gui as _g19
+
+# --- 19a. border + background controls route through colorchooser.askcolor ---
+def _find_inp(w):
+    for c in w.winfo_children():
+        try:
+            if isinstance(c, ttk.LabelFrame) and c.cget("text") == "Input":
+                return c
+        except Exception:
+            pass
+        r = _find_inp(c)
+        if r: return r
+    return None
+
+inp19 = _find_inp(root)
+r3 = None
+for row in inp19.winfo_children() if inp19 is not None else []:
+    if isinstance(row, ttk.Frame):
+        for c in row.winfo_children():
+            if isinstance(c, ttk.Label):
+                try:
+                    if "Border color" in str(c.cget("text")):
+                        r3 = row
+                except Exception:
+                    pass
+check("found the border/bg row (r3)", r3 is not None)
+ctrls19 = [c for c in r3.winfo_children() if isinstance(c, ttk.Frame)] if r3 is not None else []
+check("border row holds exactly two color controls", len(ctrls19) == 2, f"({len(ctrls19)})")
+border_sw = ctrls19[0].winfo_children()[0]
+bg_sw = ctrls19[1].winfo_children()[0]
+
+_orig_ask19 = _g19.colorchooser.askcolor
+try:
+    _bcap = {}
+    _g19.colorchooser.askcolor = lambda color=None, **opt: (_bcap.__setitem__("arg", color) or (None, None))
+    border_sw.event_generate("<Button-1>"); root.update()
+    check("border swatch click opens colorchooser.askcolor", _bcap.get("arg") is not None,
+          f"(color={_bcap.get('arg')!r})")
+    check("border askcolor pre-loaded with current border colour",
+          _bcap.get("arg") == core.rgb_to_hex(tuple(app.border_rgb)),
+          f"(got={_bcap.get('arg')!r} want={core.rgb_to_hex(tuple(app.border_rgb))!r})")
+    _bnew = (10, 200, 30)
+    _g19.colorchooser.askcolor = lambda color=None, **opt: (_bnew, core.rgb_to_hex(_bnew))
+    border_sw.event_generate("<Button-1>"); root.update()
+    check("border pick applies via _set_border_rgb", tuple(app.border_rgb) == _bnew,
+          f"(got={tuple(app.border_rgb)})")
+
+    _bcap2 = {}
+    _g19.colorchooser.askcolor = lambda color=None, **opt: (_bcap2.__setitem__("arg", color) or (None, None))
+    bg_sw.event_generate("<Button-1>"); root.update()
+    check("background swatch click opens colorchooser.askcolor", _bcap2.get("arg") is not None,
+          f"(color={_bcap2.get('arg')!r})")
+    _bnew2 = (200, 20, 120)
+    _g19.colorchooser.askcolor = lambda color=None, **opt: (_bnew2, core.rgb_to_hex(_bnew2))
+    bg_sw.event_generate("<Button-1>"); root.update()
+    check("background pick applies via _set_bg_rgb", tuple(app.bg_rgb) == _bnew2,
+          f"(got={tuple(app.bg_rgb)})")
+finally:
+    _g19.colorchooser.askcolor = _orig_ask19
+
+# --- 19b. about button: square, logo non-blank, covers no input control ---
+btn19 = app._about_btn
+check("about button exists", btn19 is not None)
+btn19.update(); root.update()
+bx, by, bw, bh = btn19.winfo_x(), btn19.winfo_y(), btn19.winfo_width(), btn19.winfo_height()
+check("about button is square", abs(bw - bh) <= 3, f"(w={bw} h={bh})")
+_logo19 = app._about_logo
+if isinstance(_logo19, tuple) and _logo19[1] is not None:
+    _a = np.asarray(_logo19[1].convert("RGBA"))[:, :, 3]
+    check("about button logo is non-blank", int(_a.max()) > 40 and float((_a > 40).mean()) > 0.02,
+          f"(fill%={100*float((_a > 40).mean()):.0f})")
+else:
+    check("about button logo is non-blank", False, "(no _about_logo ref)")
+under19 = False
+if inp19 is not None:
+    for row in inp19.winfo_children():
+        if not isinstance(row, ttk.Frame):
+            continue
+        xmax = 0
+        for c in row.winfo_children():
+            try: xmax = max(xmax, c.winfo_x() + c.winfo_width())
+            except Exception: pass
+        if row.winfo_x() + xmax > bx:
+            under19 = True
+check("about button covers no input control", not under19)
+
+# --- 19c. about window text ---
+app._show_about(); root.update()
+tops = [w for w in root.winfo_children() if isinstance(w, tk.Toplevel)]
+check("about window opens", len(tops) == 1)
+if tops:
+    win19 = tops[0]
+    texts19 = []
+    def _walk19(w):
+        for c in w.winfo_children():
+            if isinstance(c, tk.Label):
+                try: texts19.append(str(c.cget("text")))
+                except Exception: pass
+            _walk19(c)
+    _walk19(win19)
+    joined19 = "\n".join(texts19)
+    check("about says 'flashpointgui v1'", "flashpointgui v1" in joined19)
+    check("about says 'made by Saxon and Hypatia'", "made by Saxon and Hypatia" in joined19)
+    check("about says 'Qwen 3.8' + 'Hermes'", "Qwen 3.8" in joined19 and "Hermes" in joined19)
+    win19.destroy(); root.update()
+
+# --- 19d/e. label renames ---
+def _find_text_frame(w, txt):
+    for c in w.winfo_children():
+        try:
+            if isinstance(c, ttk.LabelFrame) and c.cget("text") == txt:
+                return c
+        except Exception: pass
+        r = _find_text_frame(c, txt)
+        if r: return r
+    return None
+check("'Colors' strip label present", _find_text_frame(root, "Colors") is not None)
+def _find_overlay(w):
+    for c in w.winfo_children():
+        if isinstance(c, ttk.Label):
+            try:
+                t = str(c.cget("text"))
+                if t == "Overlay: borders.png": return True
+                if "(always)" in t: return False
+            except Exception: pass
+        r = _find_overlay(c)
+        if r is True: return True
+    return False
+check("overlay label reads 'Overlay: borders.png' (no '(always)')", _find_overlay(root) is True)
 
 print(f"\nRESULT: {ok} passed, {fail} failed")
 root.destroy()

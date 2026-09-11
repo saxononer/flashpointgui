@@ -613,7 +613,7 @@ def run_pipeline(rgb, palette, num_colors=10, exact=False, min_area=50,
 
 
 # ==========================================================================
-# stats.html — interactive paint-coverage report (self-contained copy)
+# paintlist.html — interactive paint-coverage report (self-contained copy)
 # ==========================================================================
 
 STATS_HTML = """<!doctype html>
@@ -722,7 +722,7 @@ _LOGO_URI_CACHE = None
 
 def _logo_data_uri():
     """Base64 data-URI of the flashpointgui logo (shipped alongside this file),
-    or '' if it's missing. Inlined so stats.html stays fully self-contained
+    or '' if it's missing. Inlined so paintlist.html stays fully self-contained
     (opens anywhere, no sidecar image)."""
     global _LOGO_URI_CACHE
     if _LOGO_URI_CACHE is None:
@@ -739,7 +739,7 @@ def _logo_data_uri():
 
 
 def _logo_html():
-    """The <img> tag for the logo banner in stats.html, or '' if no logo."""
+    """The <img> tag for the logo banner in paintlist.html, or '' if no logo."""
     uri = _logo_data_uri()
     if not uri:
         return ""
@@ -773,7 +773,7 @@ def sanitize_name(name):
 
 def write_outputs(state, outdir, border_color="#ff00ff", bg_color="#808080",
                   stroke_width=2.0):
-    """Write master PNG, borders.png, layers/, stats.html from a PipelineState.
+    """Write master PNG, borders.png, layers/, paintlist.html from a PipelineState.
     Returns (master_path, borders_path, [layer dicts], stats_path).
     """
     border_rgb = _parse_color(border_color)
@@ -825,7 +825,7 @@ def write_outputs(state, outdir, border_color="#ff00ff", bg_color="#808080",
             "pixels": int(cd["mask"].sum()),
         })
 
-    stats_path = os.path.join(outdir, "stats.html")
+    stats_path = os.path.join(outdir, "paintlist.html")
     write_stats_html(stats_path, W, H,
                      [(L["name"], L["hex"], L["pct"]) for L in written],
                      title=stem,
