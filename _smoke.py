@@ -398,6 +398,54 @@ if disp is not None:
           db is not None and _dsum(db, _ref_frame("borders", (0, 0, 255))) == 0)
 _g.ImageTk.PhotoImage = _porig
 
+print("== 16. paint: zoom works + color-adjust skips the overlay ==")
+# (a) Zoom: the wheel updates paint_view.zoom, and _paint_view_fn must now
+#     actually read it (it was a no-op — always composited at 1:1 canvas size).
+app._bg = core.load_image_rgb(tmp_img)
+app.paint_view.cw, app.paint_view.ch = 240, 240
+app.paint_reset()
+app.paint_view.zoom = 1.0; app.paint_view.panx = 0.0; app.paint_view.pany = 0.0
+z1 = app._paint_view_fn().copy()
+app.paint_view.zoom = 2.0
+z2 = app._paint_view_fn().copy()
+check("paint zoom changes the composite (was a no-op)",
+      not np.array_equal(z1, z2))
+app.paint_view.zoom = 0.5
+z3 = app._paint_view_fn().copy()
+check("zoom in vs out differ", not np.array_equal(z2, z3))
+app.paint_view.zoom = 1.0
+# (b) Color adjust must hit ONLY the background, never the border overlay.
+#     Deterministic check: spy on adjust_image and confirm it is fed the
+#     BACKGROUND-ONLY composite (overlay not yet drawn), not the finished
+#     frame. (The old bug applied adjust_image to `out` AFTER the overlay was
+#     composited in, so it tinted the lines too.)
+app.border_rgb = (255, 0, 0)   # solid red border
+app._epoch += 1                 # invalidate the border transform cache
+app.paint_reset()
+cw, ch = 240, 240
+# reference for "background-only": exactly what _paint_view_fn feeds to
+# adjust_image (self._bg_fitted(...)/255, pre-adjust, no overlay).
+ref_bg = app._bg_fitted(cw, ch).astype("float32") / 255.0
+app.paint_hue.set(0.4)          # non-neutral adjust so the code path runs
+_g2 = __import__("flashpoint_gui")
+_seen = {}
+_real_adjust = _g2.adjust_image
+def _spy_adjust(img, *a, **k):
+    _seen["img"] = np.asarray(img).copy()
+    return _real_adjust(img, *a, **k)
+_g2.adjust_image = _spy_adjust
+try:
+    _ = app._paint_view_fn()
+finally:
+    _g2.adjust_image = _real_adjust
+check("adjust_image is called with the background-only composite",
+      "img" in _seen, f"(captured={list(_seen)})")
+if "img" in _seen:
+    d = np.abs(_seen["img"].astype(float) - ref_bg.astype(float))
+    check("that composite is the background with NO overlay in it",
+          d.max() <= 1e-6, f"(max delta vs bg-only={d.max():.2e})")
+app.paint_reset()
+
 print(f"\nRESULT: {ok} passed, {fail} failed")
 root.destroy()
 sys.exit(1 if fail else 0)

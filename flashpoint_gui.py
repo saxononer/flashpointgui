@@ -1183,6 +1183,9 @@ class FlashpointApp:
     def paint_reset(self):
         self.paint_cx = self.paint_view.cw / 2
         self.paint_cy = self.paint_view.ch / 2
+        self.paint_view.zoom = 1.0
+        self.paint_view.panx = 0.0
+        self.paint_view.pany = 0.0
         self.paint_scale.set("1.0")
         self.paint_rot.set("0")
         self.paint_opacity.set(1.0)
@@ -1267,6 +1270,11 @@ class FlashpointApp:
         x0, y0 = int(self.paint_cx - zw / 2), int(self.paint_cy - zh / 2)
         sx0, sy0 = max(0, x0), max(0, y0)
         ex, ey = min(cw, x0 + zw), min(ch, y0 + zh)
+        # Color adjust (hue/sat/light/contrast) applies ONLY to the background
+        # wall photo — the border overlay is painted on top and must keep its
+        # own color. (Saxon: it was tinting the overlay too.)
+        if adj != (0.0, 1.0, 0.0, 1.0):
+            bg = adjust_image(bg, adj[0], adj[1], adj[2], adj[3])
         out = bg.copy()
         if sx0 < ex and sy0 < ey:
             fx, fy = sx0 - x0, sy0 - y0
@@ -1276,8 +1284,29 @@ class FlashpointApp:
             bot = out[sy0:ey, sx0:ex]
             sub = top if blend == "normal" else core._blend(top, bot, blend)
             out[sy0:ey, sx0:ex] = bot * (1 - a) + sub * a
-        if adj != (0.0, 1.0, 0.0, 1.0):
-            out = adjust_image(out, adj[0], adj[1], adj[2], adj[3])
+        # Zoom: magnify the whole composite by the view's zoom, then center-fit
+        # it back to the canvas (identical visual behavior to the Prep view).
+        # Zoom/pan were previously ignored here — the wheel updated
+        # paint_view.zoom but _paint_view_fn never read it, so zooming was a
+        # no-op.
+        z = self.paint_view.zoom
+        if z != 1.0:
+            w, h = cw, ch
+            zw = max(1, int(w * z)); zh2 = max(1, int(h * z))
+            zoomed = _resize((out * 255).clip(0, 255).astype("uint8"), zw, zh2)
+            out, _ = _fit(zoomed, cw, ch)
+            out = out.astype("float32") / 255.0
+        # Pan (view-level, applied after zoom)
+        panx, pany = int(self.paint_view.panx), int(self.paint_view.pany)
+        if panx or pany:
+            res = np.zeros((ch, cw, 3), dtype="uint8")
+            d0 = max(0, panx); d1 = min(cw, cw + panx)
+            e0 = max(0, pany); e1 = min(ch, ch + pany)
+            if d1 > d0 and e1 > e0:
+                res[d0:d1, e0:e1] = (
+                    out[d0 - panx:d1 - panx, e0 - pany:e1 - pany]
+                    * 255).clip(0, 255).astype("uint8")
+            return res
         return (out * 255).clip(0, 255).astype("uint8")
 
     def paint_save(self):
