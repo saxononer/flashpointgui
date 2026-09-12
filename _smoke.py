@@ -152,6 +152,15 @@ app.prep_view.cw, app.prep_view.ch = 400, 400
 app._zoom_from_slider(3.0); root.update()
 check("slider drives zoom", abs(app.prep_view.zoom - 3.0) < 0.01,
       f"(zoom={app.prep_view.zoom:.2f})")
+# Regression for the old "NW drift + blur, no scaling" bug: the slider must
+# keep pan at (0,0) (no compounding recenter pan) and wheel must be a no-op.
+check("slider zoom keeps pan at (0,0) — no NW drift",
+      app.prep_view.panx == 0.0 and app.prep_view.pany == 0.0,
+      f"(panx={app.prep_view.panx}, pany={app.prep_view.pany})")
+_zb = (app.prep_view.zoom, app.prep_view.panx, app.prep_view.pany)
+app.prep_view._step(+1); app.prep_view._step(-1); root.update()
+check("wheel zoom is a disabled no-op (no hang)",
+      (app.prep_view.zoom, app.prep_view.panx, app.prep_view.pany) == _zb)
 
 print("== 7. paint: no layer dropdown; overlay always borders ==")
 check("no layer_var", not hasattr(app, "layer_var"))
@@ -164,6 +173,11 @@ check("paint renders 320x320 (borders overlay)", frame.shape == (320, 320, 3),
 layer = app._paint_layer_rgba()
 check("_paint_layer_rgba is borders RGBA", layer is not None and layer.shape[2] == 4,
       f"({None if layer is None else layer.shape})")
+check("border layer is cached (2nd call reuses, no re-render)",
+      app._paint_layer_rgba() is layer, "(must be the same object)")
+app._set_border_rgb((200, 20, 120))
+check("border layer rebuilds on color change (new object)",
+      app._paint_layer_rgba() is not layer, "(must re-render for new color)")
 
 print("== 8. resize lag: configure is debounced ==")
 live = set()

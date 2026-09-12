@@ -305,21 +305,29 @@ class _Preview:
     # used above (measured: 553ms -> 14ms for a 1200x860 frame).
 
     def _step(self, direction):
-        self._zoom_to(self.zoom * (1.2 ** direction))
+        # Wheel zoom is intentionally disabled (Saxon: it froze the window — a
+        # single notch is a burst of events, each doing a full-res resize with
+        # no debounce). The slider is the only zoom control now. Kept as a
+        # no-op so old bindings/smoke that poke it stay harmless.
+        return
 
     def _zoom_to(self, new):
-        new = max(0.2, min(16.0, new))
-        cx, cy = self.cw / 2, self.ch / 2
-        old = self.zoom
-        sx = (cx - self.panx) / old
-        sy = (cy - self.pany) / old
-        self.zoom = new
-        self.panx = cx - sx * new
-        self.pany = cy - sy * new
+        """Set an absolute zoom as a pure center-scale.
+
+        This is the fix for the old "NW drift + blur, no scaling" bug: the
+        previous version computed a 'keep the center pixel fixed' pan and
+        applied it *against the current (already-panned) state* on every tick,
+        so the pan compounded — dragging 1.0->3.0 drove panx/pany to ~(-1100,
+        -860), pushing the image off-screen to the NW instead of scaling it.
+        Now zoom just scales the image and recentres it (pan -> 0); the
+        view_fn already center-fits the scaled image to the canvas."""
+        self.zoom = max(0.2, min(16.0, float(new)))
+        self.panx = 0.0
+        self.pany = 0.0
         self.refresh()
 
     def set_zoom(self, new):
-        """Absolute zoom (slider) that keeps the canvas center fixed."""
+        """Absolute zoom (slider): scale the image 0.5x..3x, keep it centered."""
         self._zoom_to(float(new))
 
     def _drag(self, e):
@@ -365,6 +373,9 @@ class FlashpointApp:
         # scale/rotate change, then pan/drag just cheaply copy/offset them.
         self._prep_zoom_cache = None
         self._paint_transform_cache = None
+        # The native-res border layer (H,W,4) — built once per content epoch
+        # (border color changes bump _epoch), NOT on every mouse-move.
+        self._border_layer_cache = None
         # user-configurable line + background colors (default to the stable
         # core defaults: magenta lines, mid-gray bg)
         self.border_rgb = (255, 0, 255)
@@ -478,7 +489,6 @@ class FlashpointApp:
         """Open the About window (opened by the floating logo button)."""
         win = tk.Toplevel(self.root)
         win.title("About flashpointgui")
-        win.configure(bg="#1a1a1a")
         win.resizable(False, False)
         win.transient(self.root)
         try:
@@ -486,14 +496,16 @@ class FlashpointApp:
         except Exception:
             pass
         win.update_idletasks()
+        # No explicit background anywhere: the Toplevel and both Labels use the
+        # default Tk grey (Saxon: the old #1a1a1a made the window look dark).
         photo, base = self._logo_photo(96)
         if photo is not None:
             self._about_win_logo = (photo, base)
-            tk.Label(win, image=photo, bg="#1a1a1a").pack(pady=(16, 8))
+            tk.Label(win, image=photo).pack(pady=(16, 8))
         txt = ("flashpointgui v1\n"
                "made by Saxon and Hypatia\n"
                "[Qwen 3.8 · Hermes]")
-        tk.Label(win, text=txt, justify="center", bg="#1a1a1a", fg="#e8e8e8",
+        tk.Label(win, text=txt, justify="center",
                  font=("TkDefaultFont", 10), padx=24).pack(pady=(0, 12))
         ttk.Button(win, text="Close", command=win.destroy).pack(pady=(0, 12))
         win.grab_set()
@@ -543,6 +555,7 @@ class FlashpointApp:
         self._epoch += 1
         self._prep_zoom_cache = None
         self._paint_transform_cache = None
+        self._border_layer_cache = None
         if self.state is not None:
             self.prep_view.refresh()
             self.paint_view.refresh()
@@ -652,7 +665,10 @@ class FlashpointApp:
         ttk.Separator(vc, orient="horizontal").grid(row=3, column=0, columnspan=2,
                                                     sticky="ew", padx=6, pady=4)
         ttk.Label(vc, text="Zoom").grid(row=4, column=0, columnspan=2, sticky="w", padx=6)
-        self.zoom_scale = ttk.Scale(vc, from_=0.2, to=8.0, orient="horizontal",
+        # A plain SCALE slider: 0.5x..3x, image scaled about its center. (The old
+        # 0.2..8.0 wheel-linked zoom compounded its recenter pan and drifted off
+        # screen; Saxon wants a simple scale slider instead.)
+        self.zoom_scale = ttk.Scale(vc, from_=0.5, to=3.0, orient="horizontal",
                                     command=self._zoom_from_slider)
         self.zoom_scale.grid(row=5, column=0, columnspan=2, sticky="ew", padx=6)
         self.zoom_scale.set(1.0)
@@ -942,33 +958,46 @@ class FlashpointApp:
                     self._zoom_syncing = False
             except tk.TclError:
                 self._zoom_syncing = False
-        # Cache the zoomed+centered base. Content changes bump _epoch; zoom/
-        # canvas size are part of the key; pan is applied cheaply on top.
+        # Zoom is a real SCALE now. The old code scaled the image up by `z` and
+        # then center-fit it BACK to the canvas — for an image that already fills
+        # the frame those two cancel, so zoom was a visual no-op that only added
+        # bilinear blur (the "moves + blurs, no scale" bug). Correct model:
+        #   1. find the base's FIT size in the canvas (what "1×" shows),
+        #   2. zoom multiplies that DISPLAY size,
+        #   3. center the result (z<1 letterboxes smaller, z>1 overflows and the
+        #      pan reveals the rest). One resize, no cancel, no compounding pan.
         key = (self._epoch, self.view_var.get(), self.border_toggle.get(),
                round(z, 4), cw, ch)
         cached = self._prep_zoom_cache
         if cached is None or cached[0] != key:
             base = self._prep_base_rgba()
             h, w = base.shape[:2]
-            nw, nh = max(1, int(w * z)), max(1, int(h * z))
-            zz = _resize(base, nw, nh)
-            out, _ = _fit(zz, cw, ch)          # (ch,cw,4), centered
-            cached = (key, out)
+            fit = min(cw / max(1, w), ch / max(1, h))      # 1× display scale
+            dw = max(1, int(w * fit * z))                   # zoomed display size
+            dh = max(1, int(h * fit * z))
+            zz = _resize(base, dw, dh).astype("uint8")
+            if zz.shape[2] == 3:
+                zz = np.dstack([zz, np.full(zz.shape[:2], 255, "uint8")])
+            cached = (key, zz)
             self._prep_zoom_cache = cached
-        out = cached[1]
+        zz = cached[1]
+        dw, dh = zz.shape[1], zz.shape[0]       # zoomed display size (both cache paths)
+        # Place the zoomed image so its center sits at the canvas center, offset
+        # by the pan. Reveal the canvas window into it (crop overflow, pad the
+        # rest with transparent black).
         panx = int(self.prep_view.panx)
         pany = int(self.prep_view.pany)
         res = np.zeros((ch, cw, 4), dtype="uint8")
-        dst_x0 = max(0, panx)
-        dst_x1 = min(cw, cw + panx)
-        dst_y0 = max(0, pany)
-        dst_y1 = min(ch, ch + pany)
-        src_x0 = dst_x0 - panx
-        src_y0 = dst_y0 - pany
-        if dst_x1 > dst_x0 and dst_y1 > dst_y0:
-            res[dst_y0:dst_y1, dst_x0:dst_x1] = \
-                out[src_y0:src_y0 + (dst_y1 - dst_y0),
-                    src_x0:src_x0 + (dst_x1 - dst_x0)]
+        # zoomed-image center -> canvas (cx+panx, cy+pany)
+        oz_x = cw // 2 - dw // 2 + panx       # x of the image's top-left
+        oz_y = ch // 2 - dh // 2 + pany       # y of the image's top-left
+        # canvas-window <-> image-source overlap
+        sx0, sy0 = max(0, -oz_x), max(0, -oz_y)
+        dx0, dy0 = max(0, oz_x), max(0, oz_y)
+        dx1 = min(cw, oz_x + dw); dy1 = min(ch, oz_y + dh)
+        if dx1 > dx0 and dy1 > dy0:
+            res[dy0:dy1, dx0:dx1] = zz[sy0:sy0 + (dy1 - dy0),
+                                       sx0:sx0 + (dx1 - dx0)]
         return res
 
     def prep_save(self):
@@ -1344,7 +1373,17 @@ class FlashpointApp:
     def _paint_layer_rgba(self):
         st = self.state
         # The paint overlay is always borders.png (the layer picker was removed).
-        return core.render_borders_rgba(st, self.border_rgb)
+        # render_borders_rgba allocates + fills a full native-res (H,W,4) array
+        # — ~50MB of work at 7MP. That was running on EVERY mouse-move and was
+        # the border-drag lag. It only depends on content + border color (both
+        # tracked by _epoch), so build it once and reuse until something
+        # actually changes.
+        key = (self._epoch, self.border_rgb)
+        cached = self._border_layer_cache
+        if cached is None or cached[0] != key:
+            cached = (key, core.render_borders_rgba(st, self.border_rgb))
+            self._border_layer_cache = cached
+        return cached[1]
 
     def _paint_view_fn(self):
         cw, ch = self.paint_view.cw, self.paint_view.ch
