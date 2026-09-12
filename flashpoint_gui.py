@@ -417,22 +417,62 @@ class FlashpointApp:
             return None, None
 
     def _about_btn_size(self, e):
-        """Keep the About button a perfect square (width == current height) and
-        redraw the logo centred whenever the Input box resizes."""
-        h = max(4, e.height)
-        self._about_btn.configure(width=h)
-        self._about_btn.delete("about")
-        m = max(4, int(h * 0.07))            # margin so the logo isn't flush
-        size = h - 2 * m
-        self._about_btn.create_rectangle(1, 1, h - 2, h - 2, outline="#5a5a5a",
-                                         width=1, tags="about")
-        if size < 8:
+        """Keep the About button a square with a uniform margin on the right side
+        of the Input box and re-fit the logo on resize. `e` is the Input box's
+        <Configure> event (e.height = full box height incl. the 'Input' title
+        strip and bottom border). `place` coords inside a LabelFrame already
+        originate at the CONTENT top, so we size to the content area and use
+        y=pad directly. Title/bottom-strip are measured once, not fiddled with."""
+        pad = self._about_pad
+        if not hasattr(self, "_about_content_h") or self._about_content_h is None:
+            self._about_content_h = self._measure_content_h()
+        content = self._about_content_h or (e.height - 32)   # fallback est.
+        side = content - 2 * pad
+        if side < 40:
             return
-        photo, base = self._logo_photo(size)
+        # dock to the right edge, uniform pad from content top / right / bottom.
+        self._about_btn.place(relx=1.0, y=pad, anchor="ne", x=-pad,
+                              width=side, height=side)
+        # a ttk.Button pads ~11px around its image; size the logo to fit inside.
+        logo = max(8, side - 24)
+        photo, base = self._logo_photo(logo)
         if photo is None:
             return
         self._about_logo = (photo, base)      # keep both refs alive
-        self._about_btn.create_image(m, m, image=photo, anchor="nw", tags="about")
+        self._about_btn.configure(image=photo)
+
+    def _measure_content_h(self):
+        """Height of the 'Input' LabelFrame's content area (the region below the
+        title strip where the rows live). Measured once after the window is
+        realised: place a 1x1 probe at the content top and again at the content
+        bottom, and take the difference in absolute y. Falls back to 0."""
+        try:
+            inp = self._find_input_frame(self.root)
+            if inp is None:
+                return 0
+            p_top = tk.Frame(inp, width=1, height=1)
+            p_top.place(x=0, y=0)
+            p_bot = tk.Frame(inp, width=1, height=1)
+            p_bot.place(x=0, rely=1.0, anchor="sw")
+            self.root.update_idletasks()
+            h = max(0, (p_bot.winfo_y() + p_bot.winfo_height()) - p_top.winfo_y())
+            p_top.destroy()
+            p_bot.destroy()
+            return h
+        except Exception:
+            return 0
+
+    def _find_input_frame(self, w):
+        for c in w.winfo_children():
+            try:
+                if isinstance(c, ttk.LabelFrame) and c.cget("text") == "Input":
+                    return c
+            except Exception:
+                pass
+            r = self._find_input_frame(c)
+            if r is not None:
+                return r
+        return None
 
     def _show_about(self, _=None):
         """Open the About window (opened by the floating logo button)."""
@@ -575,15 +615,15 @@ class FlashpointApp:
         ttk.Label(r3, text="Background:").pack(side="left", padx=(20, 0))
         self._add_color_control(r3, "Background", lambda: self.bg_rgb, self._set_bg_rgb)
 
-        # Floating logo / About button (Saxon): a square that fills 100% of the
-        # Input box's height, docked to its right edge. Clicking it opens the
-        # About window. `place`d (not packed) so it overlays rather than pushing
-        # the input rows around; it is square via a <Configure> size-handler.
-        self._about_btn = tk.Canvas(inp, highlightthickness=0, bg="#1a1a1a",
-                                    cursor="hand2")
-        self._about_btn.place(relx=1.0, y=0, relheight=1.0, anchor="ne", x=-2)
-        self._about_btn.bind("<Configure>", self._about_btn_size)
-        self._about_btn.bind("<Button-1>", self._show_about)
+        # Floating logo / About button (Saxon): a square with a UNIFORM margin
+        # inside the Input box, on the right edge. Clicking it opens the About
+        # window. It's a real ttk.Button (same widget as the other buttons) so it
+        # inherits the theme's background + raised bevel instead of a flat color.
+        # `place`d (not packed) so it overlays without pushing the input rows;
+        # the <Configure> handler keeps it square with equal top/right/bottom gaps.
+        self._about_pad = 8
+        self._about_btn = ttk.Button(inp, cursor="hand2", command=self._show_about)
+        inp.bind("<Configure>", self._about_btn_size)
         self._about_logo = None       # (PhotoImage, PIL) ref, kept alive
 
         body = ttk.Frame(p)
