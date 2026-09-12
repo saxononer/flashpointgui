@@ -93,3 +93,4 @@ It is a refactor of `flashpoint.py` split into three layers so the algorithm is 
 - **Python version:** tested on Python 3.11+; `numpy`, `Pillow` and `scipy` come from `requirements.txt`.
 
 [github.com/saxononer/flashpointgui](https://github.com/saxononer/flashpointgui)
+[github.com/saxononer/flashpoint](https://github.com/saxononer/flashpoint)
