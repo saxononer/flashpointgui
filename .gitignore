@@ -12,6 +12,10 @@ master_*.png
 borders_*.png
 paintlist.html
 layers/
+_verify.py
+_smoke.py
+_shot.py
+out_synth5
 
 # OS / editor
 .DS_Store

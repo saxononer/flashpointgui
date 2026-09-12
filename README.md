@@ -1,74 +1,95 @@
-# flashpointgui
+# <img src="example/flashpointgui.png" width="50" height="50" /> flashpointgui
+flashpointgui is a GUI implementation of flashpoint, the Python-based palette-constrained posterizer used to assist mural painting with spray cans. The preparation environment lets you snap any image to any spray-can palette, get colour borders and fill areas to block in colours fast. The paint-list page helps you decide which colours to use and how many to buy. The paint environment lets you superimpose colour boundaries onto your doodle grid easily. <br>
+Made by Saxon & Hypatia [Qwen3.8, Hermes]
 
-[github.com/saxononer/flashpointgui](https://github.com/saxononer/flashpointgui)
+<img src="example/flashpointguiss1.png" width="400" />
+<img src="example/flashpointguiss2.png" width="400" />
 
-Linux Python GUI for posterizing an image into a limited, named palette and
-tracing its color boundaries into clean, simplified SVG polylines (and PNG
-layers).
+flashpointgui painting mural pipeline:
 
-It is a refactor of `flashpoint.py` (099-Flashpoint2) split into three layers
-so the algorithm is testable and a GUI can sit on top of it:
+<img src="example/compare.png" height="350" />
+
+## 📦 Install
+
+To install the package (Debian/Ubuntu):
+
+```bash
+# system packages (Arch: python3-tk is already included, skip this line)
+sudo apt install python3 python3-venv python3-tk git
+
+# get the repo
+cd ~
+git clone https://github.com/saxononer/flashpointgui .flashpointgui
+cd .flashpointgui
+
+# virtualenv + Python dependencies
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+
+# put the launcher on your PATH
+cp flashpointgui ~/.local/bin/
+```
+
+The repo includes `requirements.txt` (numpy, Pillow, scipy), the `flashpointgui` launcher script, and the `example/` images referenced above. The `flashpointgui` launcher needs to be committed (and be executable) for the last `cp` to work from a fresh clone — see "Notes" below.
+
+## 👾 How to use
+
+flashpointgui is a tool used to simplify the planning and painting of murals with spray cans. The application has 2 main environments, 'Prep' & 'Paint'. The Prep environment posterizes an input image to a desired number of colours from a spray-can palette. The Paint environment provides a lightweight compositor to overlay the colour boundary lines onto an image of your doodle grid.
+
+The steps to use the application are as follows:
+
+- **Load both input image & palette** <br>
+Palette files are .txt files relating the names of spray paint colours to their HEX code equivalents. Paint manufacturers usually publish these values online. 3 palettes are provided in `palettes/` (`Hardcore.txt`, `LoopLP.txt`, `mtn_94.txt`).
+
+- **Decide on settings.** <br>
+Adjust the number of colours (the desired quantisation level) for the posterisation effect. The minimum area determines the smallest area of a quantised colour region. Decide the height/width of the mural and adjust the paint coverage constant (typical 400ml cans are considered to have a coverage of 3m²). These numbers are used to calculate the amount of cans of each colour required. <br>
+The border and background colours can be adjusted for additional control.
+
+- **Quantise the image** <br>
+Click the quantise button and wait for the process to finish. A subtle 'Quantising...' prompt is shown at the bottom of the window to notify you of the current process. <br>
+A quantized version of the image should populate the preview area, along with the specific colours of paint and can quantities used to create the mural. These colours can be edited live to plan colour variations. The drop-down in the view pane can further isolate layers for more control.
+
+- **Paint the image** <br>
+Load your doodle grid in the paint environment and overlay the colour boundary lines onto it, adjusting the border and background colours as needed.
+
+## 🖥️ CLI usage
+
+The program also has CLI functionality based on the following usage flags:
+
+```bash
+.venv/bin/python flashpoint.py \
+  --input Hades.jpg \
+  --palette palettes/Hardcore.txt \
+  --output demo_hades \
+```
+
+### ⚙️ Flags
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--input` | — | Source image (PNG or JPG). **Required.** |
+| `--palette` | — | Palette file (`name, #rrggbb` per line). **Required.** |
+| `--output` | — | Output directory (created if missing). **Required.** |
+| `--num-colors N` | `10` | Cap the palette to the N dominant colours (nearest-N in Lab). |
+| `--min-area N` | `50` | Regions smaller than N px are merged into a neighbour (`0` disables). |
+| `--exact` | off | Use the full palette with no nearest-colour cap. |
+| `--bg-color HEX` | `#808080` | Background behind colour regions in the layer PNGs. |
+| `--border-color HEX` | `#ff00ff` | Stroke colour for the line-work — in `borders.png` and in every layer. |
+
+
+## ❓ Script Information
+
+It is a refactor of `flashpoint.py` split into three layers so the algorithm is testable and a GUI can sit on top of it:
 
 | File | Role |
 |------|------|
-| `flashpoint_core.py` | The engine. `run_pipeline()` + the cheap `render_*` / `composite_over_photo` / `save_outputs` functions. Pure numpy/scipy/PIL — no UI. |
+| `flashpoint_core.py` | The engine. `run_pipeline()` + the cheap `render_*` / `composite_over_photo` / `write_outputs` functions. Pure numpy/scipy/PIL — no UI. |
 | `flashpoint_gui.py`  | The tkinter app. Live palette editing + camera-photo blend. |
 | `flashpoint.py`      | Thin CLI wrapper — same command line as the original. |
 
-## Install
+### Notes
 
-```bash
-python3 -m venv .venv
-.venv/bin/pip install numpy scipy pillow
-```
+- **What needs to be committed:** the README references the `example/` images and the `flashpointgui` launcher script. For a fresh clone to render correctly and for the install's `cp flashpointgui ~/.local/bin/` step to work, both `example/` and the `flashpointgui` file must be `git add`ed and committed, and the launcher made executable (`chmod +x flashpointgui`).
+- **Python version:** tested on Python 3.11+; `numpy`, `Pillow` and `scipy` come from `requirements.txt`.
 
-(Any Python 3.9+ with those three deps. tkinter is in the stdlib.)
-
-## CLI
-
-```bash
-python flashpoint.py --input photo.png --palette colors.txt --output out/
-```
-
-`colors.txt` = one `name=HEX` per line, top-down by brightness. Optional flags:
-`--exact` (skip k-means pre-clustering), `--num-colors N` (k-means count),
-`--min-area N` (region cleanup), `--border-color HEX`, `--bg-color HEX`.
-
-Outputs (mirrors the original): `master_<name>.png`, `borders_<name>.png`,
-`paintlist.html`, and `layers/<hex>_<name>.png` (one per color, transparent).
-
-## GUI
-
-```bash
-python flashpoint_gui.py [image.png] [palette.txt]
-```
-
-- **Load image / Load palette / Load both** — pick files (or pass as args).
-- **Palette list** — each row is a color; select one to edit it.
-- **Live recolor** — change the HEX (or hit Pick color) and the preview
-  repaints *instantly*: the pipeline is cached, only the render re-runs.
-- **Re-run pipeline** — forces a full recompute (after changing image, min-area,
-  exact, or reordering the palette).
-- **Camera / photo blend** — Load photo, pick a blend mode (normal, multiply,
-  screen, overlay, soft-light, hard-light, color-dodge, color-burn, darken,
-  lighten), set opacity, toggle "blend over photo". Exports the composite.
-- **Show borders** — overlay the traced region contours on the preview.
-- **Save all** — writes master / borders / paintlist.html / layers, same as the CLI.
-
-## The two-tier model
-
-The pipeline (Lab convert → nearest-color → region cleanup → contour trace)
-depends only on the palette's *relative* positions, not its exact RGB. So:
-
-- **Recolor** = cheap (repaint existing regions). This is the "edit on the fly"
-  path — instant.
-- **Re-run pipeline** = expensive (nearest-color + region grow + contour trace).
-  Needed only when the image or palette *membership/order* changes.
-
-## Known quirk: Tk 9.0 preview under a virtual display
-
-`tk.PhotoImage(file=...)` is intermittently flaky under Xvfb + Tk 9.0
-(`image ... does not exist`), per-process and unrelated to timing. On a real
-display it works on the first try. The GUI ships a safety net: if the file
-path flakes, it permanently falls back to updating one persistent image via
-`put()` (slower but deterministic). No code change needed — it self-heals.
+[github.com/saxononer/flashpointgui](https://github.com/saxononer/flashpointgui)

@@ -402,11 +402,22 @@ class FlashpointApp:
         if palette_path:
             self._load_palette(palette_path)
 
+    def _logo_path(self):
+        """Path to the flashpointgui logo. Tries example/flashpointgui.png
+        (current layout) first, then a top-level flashpointgui.png for older
+        checkouts. Returns the first that exists, or the example/ path
+        regardless (callers handle the missing-file case)."""
+        base = os.path.dirname(os.path.abspath(__file__))
+        for cand in (os.path.join(base, "example", "flashpointgui.png"),
+                     os.path.join(base, "flashpointgui.png")):
+            if os.path.exists(cand):
+                return cand
+        return os.path.join(base, "example", "flashpointgui.png")
+
     def _set_window_icon(self):
-        """Load the flashpointgui logo (shipped alongside this file) and set it
-        as the window/taskbar icon. Fails silently if the PNG is missing."""
-        ico_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                 "flashpointgui.png")
+        """Load the flashpointgui logo and set it as the window/taskbar icon.
+        Fails silently if the PNG is missing."""
+        ico_path = self._logo_path()
         try:
             img = Image.open(ico_path)
             self._ico_ref = ImageTk.PhotoImage(img, master=self.root)  # keep a live reference
@@ -418,8 +429,7 @@ class FlashpointApp:
         """Resize the flashpointgui logo to a square PhotoImage of `size` px.
         Returns (photo, pil_base) — the caller MUST retain both refs so the
         PhotoImage isn't garbage-collected mid-display."""
-        p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                         "flashpointgui.png")
+        p = self._logo_path()
         try:
             base = Image.open(p).convert("RGBA")
             base = base.resize((size, size), Image.LANCZOS)
@@ -805,11 +815,11 @@ class FlashpointApp:
         used = len(self.state.color_data)
         self._status(self._quantized_status(used))
 
-    # ---- cans math (mirrors the interactive stats.html report) ----
+    # ---- cans math (mirrors the interactive paintlist.html report) ----
     # The mural's second dimension is derived from the image's aspect ratio, so
     # only ONE real-world number (width OR height in metres) is needed. The
     # per-color estimate is ceil(color_wall_area / can_coverage), exactly as the
-    # CLI's stats.html computes it.
+    # CLI's paintlist.html computes it.
     def _mural_dims(self):
         """Return (m, eff, ar) or None if no usable mural measurement.
 
@@ -1036,7 +1046,7 @@ class FlashpointApp:
         if not d:
             return
         try:
-            master, borders, written, stats = core.write_outputs(
+            master, borders, written, report = core.write_outputs(
                 self.state, d,
                 border_color=core.rgb_to_hex(self.border_rgb),
                 bg_color=core.rgb_to_hex(self.bg_rgb))
@@ -1195,8 +1205,8 @@ class FlashpointApp:
         cd["rgb"] = rgb
         cd["hex"] = newname
         if renamed:
-            # manual recolor -> the swatch now IS the hex, so stats.html / paint
-            # list / layer names never carry a stale palette name
+            # manual recolor -> the swatch now IS the hex, so the paint list /
+            # layer names never carry a stale palette name
             cd["name"] = newname
             self._build_view_menu()
         idx = st.active_idx[ci]

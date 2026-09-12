@@ -73,7 +73,7 @@ def main():
     )
 
     print(f"[write] writing outputs to {args.output} ...", flush=True)
-    master_path, borders_path, layers, stats_path = core.write_outputs(
+    master_path, borders_path, layers, report_path = core.write_outputs(
         state, args.output,
         border_color=args.border_color,
         bg_color=args.bg_color,
@@ -87,7 +87,7 @@ def main():
     for L in layers:
         print(f"  layer:   layers/{L['file']}  ({L['name']} {L['hex']}, "
               f"{L['pct']:.1f}% of image)")
-    print(f"  stats:   {stats_path}")
+    print(f"  report:  {report_path}")
     K = len(palette)
     print(f"  {len(layers)} layer(s) written (color fill + border line-work); "
           f"{K - len(layers)} palette color(s) had no surviving region.")

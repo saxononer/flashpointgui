@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# flashpointgui launcher — put on PATH via: cp flashpointgui ~/.local/bin/
+exec ~/.flashpointgui/.venv/bin/python ~/.flashpointgui/flashpoint_gui.py "$@"

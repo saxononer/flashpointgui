@@ -616,7 +616,7 @@ def run_pipeline(rgb, palette, num_colors=10, exact=False, min_area=50,
 # paintlist.html — interactive paint-coverage report (self-contained copy)
 # ==========================================================================
 
-STATS_HTML = """<!doctype html>
+PAINTLIST_HTML = """<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -721,19 +721,23 @@ _LOGO_URI_CACHE = None
 
 
 def _logo_data_uri():
-    """Base64 data-URI of the flashpointgui logo (shipped alongside this file),
+    """Base64 data-URI of the flashpointgui logo (shipped in example/),
     or '' if it's missing. Inlined so paintlist.html stays fully self-contained
     (opens anywhere, no sidecar image)."""
     global _LOGO_URI_CACHE
     if _LOGO_URI_CACHE is None:
         uri = ""
-        try:
-            p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "flashpointgui.png")
-            with open(p, "rb") as f:
-                uri = "data:image/png;base64," + base64.b64encode(f.read()).decode("ascii")
-        except Exception:
-            uri = ""
+        # Look for example/flashpointgui.png first (current layout), then fall
+        # back to a top-level flashpointgui.png for older checkouts.
+        base = os.path.dirname(os.path.abspath(__file__))
+        for cand in (os.path.join(base, "example", "flashpointgui.png"),
+                     os.path.join(base, "flashpointgui.png")):
+            try:
+                with open(cand, "rb") as f:
+                    uri = "data:image/png;base64," + base64.b64encode(f.read()).decode("ascii")
+                break
+            except Exception:
+                uri = ""
         _LOGO_URI_CACHE = uri
     return _LOGO_URI_CACHE
 
@@ -747,10 +751,10 @@ def _logo_html():
             'style="display:block;margin:0 0 12px;">' % uri)
 
 
-def write_stats_html(path, image_w, image_h, rows, title="poster", palette="unknown"):
+def write_paintlist_html(path, image_w, image_h, rows, title="poster", palette="unknown"):
     ar = (image_w / image_h) if image_h else 1.0
     data = [{"name": n, "hex": hx, "pct": float(p)} for (n, hx, p) in rows]
-    html = (STATS_HTML
+    html = (PAINTLIST_HTML
             .replace("__TITLE__", title)
             .replace("__DIM__", f"{image_w} \u00d7 {image_h} px")
             .replace("__NCOLORS__", str(len(data)))
@@ -774,7 +778,7 @@ def sanitize_name(name):
 def write_outputs(state, outdir, border_color="#ff00ff", bg_color="#808080",
                   stroke_width=2.0):
     """Write master PNG, borders.png, layers/, paintlist.html from a PipelineState.
-    Returns (master_path, borders_path, [layer dicts], stats_path).
+    Returns (master_path, borders_path, [layer dicts], report_path).
     """
     border_rgb = _parse_color(border_color)
     bg_rgb = _parse_color(bg_color)
@@ -825,12 +829,12 @@ def write_outputs(state, outdir, border_color="#ff00ff", bg_color="#808080",
             "pixels": int(cd["mask"].sum()),
         })
 
-    stats_path = os.path.join(outdir, "paintlist.html")
-    write_stats_html(stats_path, W, H,
+    report_path = os.path.join(outdir, "paintlist.html")
+    write_paintlist_html(report_path, W, H,
                      [(L["name"], L["hex"], L["pct"]) for L in written],
                      title=stem,
                      palette=getattr(state, "_palette_name", "unknown"))
-    return master_path, borders_path, written, stats_path
+    return master_path, borders_path, written, report_path
 
 
 def load_image_rgb(path):

@@ -1,0 +1,22 @@
+# flashpointgui — Python dependencies
+#
+# Install (the venv keeps these off your system Python):
+#   cd ~/D@t@/01_Projects/100-Penguinpaint/flashpointgui
+#   python3 -m venv .venv
+#   source .venv/bin/activate
+#   pip install -r ../requirements.txt
+#   python flashpoint.py
+#
+# Notes:
+#   * tkinter is NOT pip-installable — it ships with CPython. If `import tkinter`
+#     fails on your OS, install the system package:
+#       Debian/Ubuntu : sudo apt install python3-tk
+#       Arch          : included in the python/tk bundle (nothing to do)
+#       macOS (brew)  : usually present with python.org's Python
+#
+# Version floors are what flashpointgui was built and tested against
+# (numpy 2.4.6 / Pillow 12.3.0 / scipy 1.17.1, CPython 3.11).
+
+numpy>=1.24        # core pixel math (render engine, resampling)
+Pillow>=10.0       # image I/O (PIL) — PNG load/save, resize, PhotoImage
+scipy>=1.11        # cKDTree (nearest-colour) + ndimage (morphology) in the core
